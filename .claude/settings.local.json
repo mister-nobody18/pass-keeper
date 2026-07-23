@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /tmp)",
+      "Bash(rm -f cookies.txt)",
+      "Bash(curl -s -c cookies.txt -b cookies.txt -X POST http://localhost:4000/api/auth/register -H 'Content-Type: application/json' -d '{\"email\":\"test@example.com\",\"password\":\"correct-horse-battery-staple\"}' -i)",
+      "Bash(node -e ' *)",
+      "Bash(npm install *)",
+      "Bash(npm audit *)",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(timeout 40 bash -c 'until curl -sf http://localhost:5173 >/dev/null; do sleep 1; done')",
+      "Bash(curl -sf http://localhost:4000/api/auth/me -o /dev/null -w \"backend status: %{http_code}\\\\n\")",
+      "Bash(node -e \"require.resolve\\('playwright'\\)\")",
+      "Bash(npm ls *)",
+      "Bash(where npx *)",
+      "Bash(npm init *)",
+      "Bash(npx playwright *)",
+      "Bash(node drive.js)",
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(curl -s -o /dev/null -w \"frontend :5173 status: %{http_code}\\\\n\" http://localhost:5173)",
+      "Bash(curl -s -o /dev/null -w \"backend :4000 status: %{http_code}\\\\n\" http://localhost:4000/api/auth/me)"
+    ]
+  }
+}
