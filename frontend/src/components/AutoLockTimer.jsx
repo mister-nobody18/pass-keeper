@@ -1,10 +1,26 @@
+import { useEffect, useState } from 'react';
 import { RefreshCw, Timer } from 'lucide-react';
 import { useVaultLock } from '../context/VaultLockContext.jsx';
 import { formatCountdown } from '../utils/time.js';
 import { cn } from '../utils/cn.js';
 
+const TICK_MS = 1000;
+
 export default function AutoLockTimer({ className }) {
-    const { remainingMs, idleLockMs, extend, locked } = useVaultLock();
+    const { getRemainingMs, idleLockMs, extend, locked } = useVaultLock();
+    // This is the ONE piece of state in the app that updates every second -
+    // deliberately kept local to this small leaf component (see
+    // VaultLockContext.jsx) so that 1Hz re-render never propagates up into
+    // Dashboard, EntryModal, or anything else on the page.
+    const [remainingMs, setRemainingMs] = useState(getRemainingMs);
+
+    useEffect(() => {
+        if (locked) return undefined;
+        setRemainingMs(getRemainingMs());
+        const interval = setInterval(() => setRemainingMs(getRemainingMs()), TICK_MS);
+        return () => clearInterval(interval);
+    }, [locked, getRemainingMs]);
+
     if (locked) return null;
 
     const low = remainingMs <= 60_000;

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext.jsx';
 import { api } from '../api/client.js';
 import { deriveKeys } from '../crypto/kdfClient.js';
@@ -25,12 +25,23 @@ export function VaultLockProvider({ children }) {
     // survives one, by design - see crypto/vaultKeyStore.js), false when
     // navigating between routes within the same still-unlocked page session.
     const [locked, setLocked] = useState(() => !hasVaultKey());
-    const [remainingMs, setRemainingMs] = useState(IDLE_LOCK_MS);
     const lastActivityRef = useRef(Date.now());
+
+    // Deliberately NOT React state. Every consumer of this context (e.g.
+    // Dashboard.jsx, for `lock`/`locked`) would re-render on every change to
+    // the context value - if the live countdown lived here as state, every
+    // one of those consumers would re-render once a second regardless of
+    // whether they use the countdown at all. That was the root cause of a
+    // real bug: it cascaded into remounting/re-triggering effects in open
+    // modals, stealing input focus every second. AutoLockTimer.jsx reads the
+    // countdown via getRemainingMs() on its own local 1-second interval
+    // instead, so only that one small leaf component re-renders each tick.
+    const getRemainingMs = useCallback(() => {
+        return Math.max(0, IDLE_LOCK_MS - (Date.now() - lastActivityRef.current));
+    }, []);
 
     const extend = useCallback(() => {
         lastActivityRef.current = Date.now();
-        setRemainingMs(IDLE_LOCK_MS);
     }, []);
 
     const lock = useCallback(() => {
@@ -66,14 +77,13 @@ export function VaultLockProvider({ children }) {
         }
         ACTIVITY_EVENTS.forEach((evt) => window.addEventListener(evt, onActivity, { passive: true }));
 
+        // This interval only needs to notice when time has actually run out
+        // (a rare event) - it does not need to update any per-tick display
+        // state itself. AutoLockTimer.jsx ticks its own display independently.
         const interval = setInterval(() => {
-            const remaining = IDLE_LOCK_MS - (Date.now() - lastActivityRef.current);
-            if (remaining <= 0) {
-                setRemainingMs(0);
+            if (getRemainingMs() <= 0) {
                 clearVaultKey();
                 setLocked(true);
-            } else {
-                setRemainingMs(remaining);
             }
         }, TICK_MS);
 
@@ -81,21 +91,28 @@ export function VaultLockProvider({ children }) {
             ACTIVITY_EVENTS.forEach((evt) => window.removeEventListener(evt, onActivity));
             clearInterval(interval);
         };
-    }, [user, locked]);
+    }, [user, locked, getRemainingMs]);
 
     useEffect(() => {
         if (!user) {
             clearVaultKey();
             setLocked(true);
-            setRemainingMs(IDLE_LOCK_MS);
+            lastActivityRef.current = Date.now();
         }
     }, [user]);
 
-    return (
-        <VaultLockContext.Provider value={{ locked, remainingMs, idleLockMs: IDLE_LOCK_MS, extend, lock, unlock }}>
-            {children}
-        </VaultLockContext.Provider>
+    // Memoized so the context value's identity only changes when `locked`
+    // actually flips - not on every render of some unrelated ancestor. Every
+    // function here is itself referentially stable (useCallback with fixed
+    // deps), so this object is now stable across renders where `locked`
+    // doesn't change, and consumers that only care about `lock`/`unlock`/
+    // `extend` (not the live countdown) don't re-render on the 1Hz tick at all.
+    const value = useMemo(
+        () => ({ locked, idleLockMs: IDLE_LOCK_MS, getRemainingMs, extend, lock, unlock }),
+        [locked, getRemainingMs, extend, lock, unlock]
     );
+
+    return <VaultLockContext.Provider value={value}>{children}</VaultLockContext.Provider>;
 }
 
 export function useVaultLock() {

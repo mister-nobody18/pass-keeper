@@ -10,6 +10,17 @@ export default function Modal({ open, onClose, title, children, footer, classNam
     const panelRef = useRef(null);
     const previouslyFocused = useRef(null);
 
+    // Callers (e.g. Dashboard.jsx) routinely pass `onClose` as a new inline
+    // arrow function on every render - that's normal and fine, but this
+    // effect must NOT depend on it directly, or a parent re-render (even one
+    // totally unrelated to this modal, like a 1-second countdown ticking
+    // elsewhere on the page) would re-run the effect below and yank focus
+    // back to the first field on every tick. Keeping the latest onClose in a
+    // ref lets the effect depend on `open` alone while still always calling
+    // the current onClose.
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
+
     useEffect(() => {
         if (!open) return;
 
@@ -20,7 +31,7 @@ export default function Modal({ open, onClose, title, children, footer, classNam
 
         function handleKeyDown(e) {
             if (e.key === 'Escape') {
-                onClose();
+                onCloseRef.current();
                 return;
             }
             if (e.key !== 'Tab' || !panel) return;
@@ -44,7 +55,9 @@ export default function Modal({ open, onClose, title, children, footer, classNam
             document.removeEventListener('keydown', handleKeyDown);
             previouslyFocused.current?.focus?.();
         };
-    }, [open, onClose]);
+        // Intentionally only `open` - see the onCloseRef comment above.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
 
     if (!open) return null;
 
