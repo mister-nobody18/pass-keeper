@@ -1,4 +1,13 @@
 import { useState } from 'react';
+import { AlertCircle, Eye, EyeOff, Loader2, Trash2 } from 'lucide-react';
+import Modal from './ui/Modal.jsx';
+import Input from './ui/Input.jsx';
+import Textarea from './ui/Textarea.jsx';
+import Button from './ui/Button.jsx';
+import PasswordStrengthMeter from './ui/PasswordStrengthMeter.jsx';
+import AgeBadge from './ui/AgeBadge.jsx';
+import { useHoldReveal } from '../hooks/useHoldReveal.js';
+import { formatAbsoluteDate, formatRelativeTime } from '../utils/time.js';
 
 const emptyForm = { platformName: '', username: '', password: '', url: '', notes: '' };
 
@@ -15,9 +24,10 @@ export default function EntryModal({ entry, onClose, onSave, onDelete }) {
               }
             : emptyForm
     );
-    const [showPassword, setShowPassword] = useState(false);
+    const { revealed, bind } = useHoldReveal();
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
+    const [deleting, setDeleting] = useState(false);
 
     function update(field, value) {
         setForm((f) => ({ ...f, [field]: value }));
@@ -40,104 +50,132 @@ export default function EntryModal({ entry, onClose, onSave, onDelete }) {
         }
     }
 
-    return (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-20" onClick={onClose}>
-            <div
-                onClick={(e) => e.stopPropagation()}
-                className="w-full max-w-md bg-surface-raised border border-surface-border rounded-2xl p-6 shadow-xl max-h-[90vh] overflow-y-auto"
-            >
-                <h2 className="text-lg font-semibold mb-4">{isEditing ? 'Edit entry' : 'Add new entry'}</h2>
+    async function handleDeleteClick() {
+        setDeleting(true);
+        try {
+            await onDelete(entry);
+        } catch {
+            // Failure is already surfaced by the caller's toast; just stop showing the spinner.
+        } finally {
+            setDeleting(false);
+        }
+    }
 
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <label className="block text-sm text-slate-300 mb-1">Platform name</label>
-                        <input
-                            type="text"
-                            required
-                            value={form.platformName}
-                            onChange={(e) => update('platformName', e.target.value)}
-                            className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                        />
+    const busy = submitting || deleting;
+
+    return (
+        <Modal
+            open
+            onClose={onClose}
+            title={isEditing ? 'Edit entry' : 'Add new entry'}
+            footer={
+                <div className="flex w-full items-center justify-between gap-3">
+                    {isEditing ? (
+                        <button
+                            type="button"
+                            onClick={handleDeleteClick}
+                            disabled={busy}
+                            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-danger transition-colors duration-fast hover:bg-danger/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60"
+                        >
+                            {deleting ? (
+                                <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                            ) : (
+                                <Trash2 size={14} aria-hidden="true" />
+                            )}
+                            Delete
+                        </button>
+                    ) : (
+                        <span />
+                    )}
+                    <div className="flex items-center gap-2">
+                        <Button type="button" variant="secondary" size="sm" onClick={onClose} disabled={busy}>
+                            Cancel
+                        </Button>
+                        <Button type="submit" form="entry-form" size="sm" loading={submitting} disabled={deleting}>
+                            {submitting ? 'Saving…' : 'Save'}
+                        </Button>
                     </div>
-                    <div>
-                        <label className="block text-sm text-slate-300 mb-1">Username / email</label>
-                        <input
-                            type="text"
-                            required
-                            value={form.username}
-                            onChange={(e) => update('username', e.target.value)}
-                            className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm text-slate-300 mb-1">Password</label>
-                        <div className="relative">
-                            <input
-                                type={showPassword ? 'text' : 'password'}
-                                required
-                                value={form.password}
-                                onChange={(e) => update('password', e.target.value)}
-                                className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                            />
+                </div>
+            }
+        >
+            <form id="entry-form" onSubmit={handleSubmit} className="space-y-4" noValidate>
+                <Input
+                    id="entry-platform"
+                    label="Platform name"
+                    required
+                    value={form.platformName}
+                    onChange={(e) => update('platformName', e.target.value)}
+                />
+                <Input
+                    id="entry-username"
+                    label="Username / email"
+                    required
+                    value={form.username}
+                    onChange={(e) => update('username', e.target.value)}
+                />
+                <div>
+                    <Input
+                        id="entry-password"
+                        type={revealed ? 'text' : 'password'}
+                        label="Password"
+                        required
+                        value={form.password}
+                        onChange={(e) => update('password', e.target.value)}
+                        rightSlot={
                             <button
                                 type="button"
-                                onClick={() => setShowPassword((s) => !s)}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                                onPointerDown={bind.onPointerDown}
+                                onPointerUp={bind.onPointerUp}
+                                onPointerLeave={bind.onPointerLeave}
+                                aria-pressed={revealed}
+                                aria-label={revealed ? 'Hide password' : 'Reveal password (click, or press and hold)'}
+                                className="rounded p-1 text-ink-tertiary transition-colors duration-fast hover:text-ink-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                             >
-                                {showPassword ? '🙈' : '👁'}
+                                {revealed ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
                             </button>
-                        </div>
+                        }
+                    />
+                    <div className="mt-2">
+                        <PasswordStrengthMeter password={form.password} context={[form.username]} />
                     </div>
-                    <div>
-                        <label className="block text-sm text-slate-300 mb-1">URL (optional)</label>
-                        <input
-                            type="text"
-                            value={form.url}
-                            onChange={(e) => update('url', e.target.value)}
-                            placeholder="https://"
-                            className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm text-slate-300 mb-1">Notes (optional)</label>
-                        <textarea
-                            value={form.notes}
-                            onChange={(e) => update('notes', e.target.value)}
-                            rows={3}
-                            className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 resize-none"
-                        />
-                    </div>
+                </div>
+                <Input
+                    id="entry-url"
+                    label="URL (optional)"
+                    value={form.url}
+                    onChange={(e) => update('url', e.target.value)}
+                    placeholder="https://"
+                />
+                <Textarea
+                    id="entry-notes"
+                    label="Notes (optional)"
+                    rows={3}
+                    value={form.notes}
+                    onChange={(e) => update('notes', e.target.value)}
+                />
 
-                    {error && <p className="text-sm text-red-400">{error}</p>}
-
-                    <div className="flex items-center gap-3 pt-2">
-                        <button
-                            type="submit"
-                            disabled={submitting}
-                            className="flex-1 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 transition-colors py-2 text-sm font-medium"
-                        >
-                            {submitting ? 'Saving…' : 'Save'}
-                        </button>
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="flex-1 rounded-lg border border-surface-border hover:bg-surface transition-colors py-2 text-sm font-medium"
-                        >
-                            Cancel
-                        </button>
+                {isEditing && (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line pt-3 text-xs text-ink-tertiary">
+                        <span title={formatAbsoluteDate(entry.createdAt)}>
+                            Created {formatRelativeTime(entry.createdAt)}
+                        </span>
+                        <span title={formatAbsoluteDate(entry.updatedAt)}>
+                            Updated {formatRelativeTime(entry.updatedAt)}
+                        </span>
+                        <AgeBadge updatedAt={entry.updatedAt} />
                     </div>
+                )}
 
-                    {isEditing && (
-                        <button
-                            type="button"
-                            onClick={() => onDelete(entry)}
-                            className="w-full text-sm text-red-400 hover:text-red-300 pt-2"
-                        >
-                            Delete entry
-                        </button>
-                    )}
-                </form>
-            </div>
-        </div>
+                {error && (
+                    <div
+                        role="alert"
+                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                    >
+                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                        <span>{error}</span>
+                    </div>
+                )}
+            </form>
+        </Modal>
     );
 }

@@ -1,15 +1,36 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { AlertCircle, ArrowLeft, CheckCircle2, KeyRound } from 'lucide-react';
 import { api } from '../api/client.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { useVaultLock } from '../context/VaultLockContext.jsx';
+import { useToast } from '../context/ToastContext.jsx';
+import { deriveKeys, generateKdfSalt, DEFAULT_KDF_PARAMS } from '../crypto/kdfClient.js';
+import { encryptVault, decryptVault, VaultDecryptionError } from '../crypto/vaultCipher.js';
+import { setVaultKey } from '../crypto/vaultKeyStore.js';
 import TopBar from '../components/TopBar.jsx';
+import Panel from '../components/ui/Panel.jsx';
+import Input from '../components/ui/Input.jsx';
+import Button from '../components/ui/Button.jsx';
+import PasswordStrengthMeter from '../components/ui/PasswordStrengthMeter.jsx';
+
+const PHASE_LABEL = {
+    'deriving-current': 'Deriving current key…',
+    'decrypting': 'Verifying current password…',
+    'deriving-new': 'Deriving new key…',
+    'saving': 'Saving…',
+};
 
 export default function Settings() {
+    const { user } = useAuth();
+    const { extend } = useVaultLock();
+    const { showToast } = useToast();
     const [currentPassword, setCurrentPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [error, setError] = useState('');
     const [success, setSuccess] = useState(false);
-    const [submitting, setSubmitting] = useState(false);
+    const [phase, setPhase] = useState(null);
 
     async function handleChangePassword(e) {
         e.preventDefault();
@@ -25,104 +46,198 @@ export default function Settings() {
             return;
         }
 
-        setSubmitting(true);
         try {
-            await api.changePassword(currentPassword, newPassword);
+            // 1. Re-derive the CURRENT key from the typed current password, using
+            //    this account's existing (possibly older, lower-cost) stored params.
+            setPhase('deriving-current');
+            const { kdfSalt: currentSalt, kdfParams: currentParamsJson } = await api.getLoginSalt(user.email);
+            const { authHash: currentAuthHash, encryptionKey: currentKey } = await deriveKeys(
+                currentPassword,
+                currentSalt,
+                JSON.parse(currentParamsJson)
+            );
+
+            // 2. Prove that key is actually correct by using it for real, against
+            //    the real vault - not just trusting the typed password. A wrong
+            //    current password fails right here, locally, as a normal GCM
+            //    decrypt failure (see crypto/vaultCipher.js), before any request
+            //    that would touch the server's rate limit for this account.
+            setPhase('decrypting');
+            const { ciphertext, revision } = await api.getVault();
+            let entries;
+            try {
+                entries = await decryptVault(ciphertext, currentKey);
+            } catch (err) {
+                if (err instanceof VaultDecryptionError) {
+                    throw new Error('Current password is incorrect.');
+                }
+                throw err;
+            }
+
+            // 3. Derive a FRESH key from the new password, with a fresh salt and
+            //    the current DEFAULT_KDF_PARAMS - this is how an account's KDF
+            //    parameters actually get upgraded over time (see
+            //    CONTRIBUTING.md): the next time this account picks a new
+            //    password, it re-keys under whatever parameters are current then.
+            setPhase('deriving-new');
+            const newSalt = generateKdfSalt();
+            const { authHash: newAuthHash, encryptionKey: newKey } = await deriveKeys(
+                newPassword,
+                newSalt,
+                DEFAULT_KDF_PARAMS
+            );
+            const newVaultCiphertext = await encryptVault(entries, newKey);
+
+            // 4. Server commits the new auth hash and the re-encrypted vault
+            //    together, or neither - see backend-php/public_html/api/change_password.php.
+            setPhase('saving');
+            try {
+                await api.changePassword({
+                    currentAuthHash,
+                    newAuthHash,
+                    newKdfSalt: newSalt,
+                    newKdfParams: JSON.stringify(DEFAULT_KDF_PARAMS),
+                    newVaultCiphertext,
+                    expectedVaultRevision: revision,
+                });
+            } catch (err) {
+                if (err.isNetworkError) {
+                    // The request may have reached the server and committed
+                    // before the connection dropped - the server transaction
+                    // is atomic (see change_password.php), but from here we
+                    // genuinely can't tell whether it ran. Don't imply
+                    // "nothing happened": that would send the user back to
+                    // retrying with their OLD password, which would then be
+                    // rejected (confusingly, as "incorrect") if the change
+                    // actually did go through the first time.
+                    throw new Error(
+                        "Lost connection while saving. We can't confirm whether your password was changed — " +
+                            'try signing in with your NEW password before retrying with the old one.'
+                    );
+                }
+                throw err;
+            }
+
+            setVaultKey(newKey);
             setSuccess(true);
             setCurrentPassword('');
             setNewPassword('');
             setConfirmPassword('');
+            extend(); // password change issues a fresh server session; reset the idle lock to match
+            showToast({ tone: 'success', message: 'Master password updated.' });
         } catch (err) {
             setError(err.message);
         } finally {
-            setSubmitting(false);
+            setPhase(null);
         }
     }
 
+    const submitting = phase !== null;
+
     return (
-        <div className="max-w-3xl mx-auto p-4 sm:p-6">
+        <div className="mx-auto max-w-3xl p-4 sm:p-6">
             <TopBar />
 
-            <Link to="/" className="text-sm text-blue-400 hover:text-blue-300">
-                ← Back to vault
+            <Link
+                to="/"
+                className="inline-flex items-center gap-1.5 rounded text-sm text-ink-secondary transition-colors duration-fast hover:text-ink-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+                <ArrowLeft size={14} aria-hidden="true" />
+                Back to vault
             </Link>
 
-            <h2 className="text-xl font-semibold mt-4 mb-6">Account settings</h2>
+            <h2 className="mb-6 mt-4 text-xl font-semibold text-ink-primary">Account settings</h2>
 
-            <section className="bg-surface-raised border border-surface-border rounded-2xl p-6 mb-6">
-                <h3 className="font-medium mb-1">Change master password</h3>
-                <p className="text-sm text-slate-400 mb-4">
-                    Your vault stays intact — entries are re-encrypted automatically under your new password.
+            <Panel padding="lg" className="mb-6">
+                <h3 className="font-medium text-ink-primary">Change master password</h3>
+                <p className="mb-4 mt-1 text-sm text-ink-secondary">
+                    Your vault stays intact — it's decrypted and re-encrypted under your new password
+                    entirely in your browser.
                 </p>
 
-                <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
+                <form onSubmit={handleChangePassword} className="max-w-sm space-y-4" noValidate>
+                    <Input
+                        id="current-password"
+                        type="password"
+                        label="Current password"
+                        required
+                        autoComplete="current-password"
+                        disabled={submitting}
+                        leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                    />
                     <div>
-                        <label className="block text-sm text-slate-300 mb-1">Current password</label>
-                        <input
+                        <Input
+                            id="new-password"
                             type="password"
-                            required
-                            autoComplete="current-password"
-                            value={currentPassword}
-                            onChange={(e) => setCurrentPassword(e.target.value)}
-                            className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm text-slate-300 mb-1">New password</label>
-                        <input
-                            type="password"
+                            label="New password"
                             required
                             minLength={10}
                             autoComplete="new-password"
+                            disabled={submitting}
+                            leftIcon={<KeyRound size={16} aria-hidden="true" />}
                             value={newPassword}
                             onChange={(e) => setNewPassword(e.target.value)}
-                            className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
                         />
+                        <div className="mt-2">
+                            <PasswordStrengthMeter password={newPassword} />
+                        </div>
                     </div>
-                    <div>
-                        <label className="block text-sm text-slate-300 mb-1">Confirm new password</label>
-                        <input
-                            type="password"
-                            required
-                            autoComplete="new-password"
-                            value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
-                            className="w-full rounded-lg bg-surface border border-surface-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                        />
-                    </div>
-
-                    {error && <p className="text-sm text-red-400">{error}</p>}
-                    {success && <p className="text-sm text-green-400">Master password updated.</p>}
-
-                    <button
-                        type="submit"
+                    <Input
+                        id="confirm-new-password"
+                        type="password"
+                        label="Confirm new password"
+                        required
+                        autoComplete="new-password"
                         disabled={submitting}
-                        className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 transition-colors px-4 py-2 text-sm font-medium"
-                    >
-                        {submitting ? 'Updating…' : 'Update password'}
-                    </button>
-                </form>
-            </section>
+                        leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        error={confirmPassword && confirmPassword !== newPassword ? "Passwords don't match." : undefined}
+                    />
 
-            <section className="bg-surface-raised border border-surface-border rounded-2xl p-6">
-                <div className="flex items-center justify-between">
+                    {error && (
+                        <div
+                            role="alert"
+                            className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                        >
+                            <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                            <span>{error}</span>
+                        </div>
+                    )}
+                    {success && (
+                        <div className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 px-3 py-2.5 text-sm text-success">
+                            <CheckCircle2 size={16} className="shrink-0" aria-hidden="true" />
+                            <span>Master password updated.</span>
+                        </div>
+                    )}
+
+                    <Button type="submit" loading={submitting}>
+                        {submitting ? PHASE_LABEL[phase] : 'Update password'}
+                    </Button>
+                </form>
+            </Panel>
+
+            <Panel padding="lg">
+                <div className="flex items-center justify-between gap-4">
                     <div>
-                        <h3 className="font-medium">Two-factor authentication</h3>
-                        <p className="text-sm text-slate-400">Add an authenticator app for extra login security.</p>
+                        <h3 className="font-medium text-ink-primary">Two-factor authentication</h3>
+                        <p className="text-sm text-ink-secondary">Add an authenticator app for extra login security.</p>
                     </div>
                     <div className="flex items-center gap-2">
-                        <span className="text-xs text-slate-500 uppercase tracking-wide">Coming soon</span>
+                        <span className="font-mono text-xs uppercase tracking-wide text-ink-tertiary">Coming soon</span>
                         <button
                             type="button"
                             disabled
                             title="Two-factor authentication is coming in a future update"
-                            className="w-11 h-6 rounded-full bg-surface border border-surface-border cursor-not-allowed relative opacity-60"
+                            className="relative h-6 w-11 cursor-not-allowed rounded-full border border-line bg-surface opacity-60"
                         >
-                            <span className="absolute left-1 top-1 w-4 h-4 rounded-full bg-slate-500" />
+                            <span className="absolute left-1 top-1 h-4 w-4 rounded-full bg-ink-tertiary" />
                         </button>
                     </div>
                 </div>
-            </section>
+            </Panel>
         </div>
     );
 }

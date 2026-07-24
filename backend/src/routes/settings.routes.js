@@ -2,7 +2,9 @@ import { Router } from 'express';
 import requireAuth, { SESSION_COOKIE } from '../middleware/requireAuth.js';
 import { csrfProtection, issueCsrfCookie } from '../middleware/csrf.js';
 import { changePassword, AuthError, findUserById, toPublicUser } from '../services/user.service.js';
-import { createSession, destroySessionsForUser, SESSION_TTL_MS } from '../services/session.service.js';
+import { createSession, destroySessionsForUser } from '../services/session.service.js';
+import { sessionCookieOptions } from '../utils/cookies.js';
+import { settingsPasswordLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -13,7 +15,7 @@ router.use(csrfProtection);
 // columns exist on the users table for a future phase; the settings UI only shows a
 // disabled "coming soon" toggle for now, so there is no endpoint to back it yet.
 
-router.put('/password', async (req, res) => {
+router.put('/password', settingsPasswordLimiter, async (req, res) => {
     const { currentPassword, newPassword } = req.body || {};
     if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || newPassword.length < 10) {
         return res.status(400).json({ error: 'Current password and a new password (min 10 characters) are required.' });
@@ -27,14 +29,7 @@ router.put('/password', async (req, res) => {
         destroySessionsForUser(req.user.id);
         const user = findUserById(req.user.id);
         const sessionId = createSession(user, dek);
-        res.cookie(SESSION_COOKIE, sessionId, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            signed: true,
-            path: '/',
-            maxAge: SESSION_TTL_MS,
-        });
+        res.cookie(SESSION_COOKIE, sessionId, sessionCookieOptions());
         issueCsrfCookie(res);
 
         res.json({ user: toPublicUser(user) });

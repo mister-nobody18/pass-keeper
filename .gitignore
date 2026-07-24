@@ -1,10 +1,44 @@
+# Node (current prototype + frontend build tooling)
 node_modules/
+npm-debug.log*
+frontend/dist/
+
+# Current prototype's SQLite data
 backend/data/*.db
 backend/data/*.db-journal
 backend/data/*.db-wal
 backend/data/*.db-shm
-frontend/dist/
+
+# Secrets and environment config — never commit real values.
+# Keep a committed *.example counterpart for each of these instead.
 .env
+.env.*
+!.env.example
+config/secrets.php
+backend/config/secrets.php
+backend-php/config/config.php
 *.local
+
+# Database dumps / backups — never commit real data.
+# (Schema/migration *.sql files are meant to be committed; this only
+# targets exports/backups, which should never live in git regardless of
+# whether they contain plaintext or ciphertext.)
+*.sql.gz
+*.sql.bz2
+*.dump
+*.dump.sql
+/backups/
+/dumps/
+*-backup.sql
+*-dump.sql
+backend-php/backups/
+
+# Private keys / credentials of any kind
+*.pem
+*.key
+*.p12
+*.pfx
+.htpasswd
+
 .DS_Store
-npm-debug.log*
+Thumbs.db

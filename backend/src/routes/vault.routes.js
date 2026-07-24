@@ -7,6 +7,11 @@ const router = Router();
 
 router.use(requireAuth);
 router.use(csrfProtection);
+// Every response from this router carries decrypted vault secrets - never let it be cached.
+router.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+});
 
 function validateEntryBody(body) {
     const { platformName, username, password } = body || {};

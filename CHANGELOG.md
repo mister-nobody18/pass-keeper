@@ -1,0 +1,152 @@
+# Changelog
+
+This project doesn't cut versioned releases yet — entries are grouped by
+migration/audit milestone instead of a version number.
+
+## PHP/MySQL migration + browser-side crypto — 2026-07-24
+
+### Added
+
+- `backend-php/`: full PHP 8.1+/MySQL backend — `register`, `login_salt`,
+  `login`, `logout`, `me`, `vault` (GET/PUT), `change_password`. Zero
+  Composer dependencies; every query is a PDO prepared statement.
+- `frontend/src/crypto/`: client-side Argon2id (`libsodium-wrappers-sumo`,
+  WASM, run in a dedicated Web Worker) + HKDF (native WebCrypto) +
+  AES-256-GCM (native WebCrypto). The master password and the vault's
+  encryption key never leave the browser in any form — only an
+  HKDF-derived auth hash and opaque AES-GCM ciphertext ever reach the
+  server. See `docs/ARCHITECTURE.md` §5 for the full pipeline.
+- Whole-vault, single-encrypted-blob storage model with optimistic
+  concurrency (revision-based compare-and-swap) on every save.
+- Client-side idle auto-lock; wipes the in-memory encryption key on lock,
+  logout, and tab close/hide.
+- `docs/ARCHITECTURE.md`, `docs/THREAT-MODEL.md`, `docs/DEPLOYMENT.md`,
+  and this file.
+- MySQL-backed fixed-window rate limiting (no Redis available on the
+  target host) on `register`, `login` (by IP *and* by account), and
+  `change_password`.
+- Deployment artifacts for DirectAdmin + LiteSpeed shared hosting with no
+  SSH: `.htaccess` (HTTPS force, dotfile/config/`.sql` blocks, a CSP tight
+  enough to allow the Argon2id WASM module while blocking inline scripts,
+  correctly scoped so it can't clobber the API's own stricter CSP), a
+  pure-PHP cron backup script with rotation (no `mysqldump`/shell
+  dependency), and a full no-SSH deployment + verification procedure.
+
+### Changed
+
+- Migrated off the Node.js/Express + SQLite prototype (`backend/` — kept
+  in the repo for reference; the frontend no longer talks to it).
+- Vault storage moved from per-entry encrypted columns to a single
+  client-encrypted JSON blob per user — see `docs/ARCHITECTURE.md` §1 for
+  the trade-offs this accepts (no server-side search/pagination; every
+  save re-encrypts the whole vault).
+- Sessions moved from an in-memory Node `Map` (which briefly held a
+  server-derived decryption key) to native PHP sessions holding no key
+  material at all — the server is now fully crypto-blind, not just
+  "crypto-blind at rest."
+
+### Security
+
+Findings from an end-to-end audit of the completed migration — client
+crypto, every backend endpoint, session/CSRF/rate-limit/enumeration logic —
+ranked by severity.
+
+- **Medium — change-password rate limit was bypassable by rotating IP.**
+  The rate-limit bucket key was `user:<id>:ip:<ip>`. Because it included
+  the client's IP alongside the authenticated user ID, an attacker who
+  already held a stolen session cookie (but not the master password)
+  could rotate their apparent source IP (proxy pool, VPN, mobile network
+  churn) to make unlimited current-password guesses against
+  `change_password.php`, defeating the rate limit's purpose. **Fixed:**
+  the bucket is now keyed on the user ID alone
+  (`backend-php/public_html/api/change_password.php`). This endpoint
+  already requires a valid session, so the ID isn't attacker-controlled;
+  IP added no security value, only a bypass surface. (For comparison,
+  `login.php`'s per-account bucket was already keyed on the email hash
+  alone, with no IP component — it didn't have this bug.)
+
+- **Medium — ambiguous client state on a network failure during
+  change-password or a vault save.** If the connection dropped after the
+  server had already committed a change but before the client received
+  the response, the client had no way to distinguish "the request failed"
+  from "it succeeded but the response was lost," and reported a plain
+  failure. For change-password specifically, this could strand a user in
+  a confusing state: retrying with what they believe is their current
+  password would be rejected as "incorrect," because the server had
+  already rotated to the new one. For a vault save, retrying could
+  silently create a duplicate entry. **Fixed:** on a network-level
+  failure (not a clean HTTP error response) during these two operations,
+  the client now checks before reporting failure instead of assuming it —
+  `Dashboard.jsx` re-fetches the vault's revision and reports success (not
+  failure) if the write demonstrably landed; `Settings.jsx`, where a
+  corroborating check isn't safely possible without knowing the new
+  password, now says explicitly that the outcome is unknown and to try
+  signing in with the *new* password before retrying with the old one,
+  rather than implying nothing happened.
+
+- **Low / informational — login and register have no CSRF check, by
+  design** (there's no session yet at that point to double-submit
+  against). Reviewed specifically for exploitability as "login CSRF": a
+  cross-site attacker can't complete a working forgery here through a
+  plain HTML form (blocked because the endpoint requires a JSON request
+  body, which forms cannot produce) or through cross-origin `fetch`/`XHR`
+  (blocked by the browser's CORS preflight, since the app sends no
+  `Access-Control-Allow-Origin` permitting any cross-origin caller). No
+  code change — but this protection is currently an *incidental* result
+  of requiring JSON bodies and configuring no CORS policy, not an
+  explicit control. Noted here as a dependency to be aware of if CORS is
+  ever introduced for any reason (e.g. to support a future companion app).
+
+- **Low / theoretical — the login-salt lookup's fake-account path does
+  marginally more work than the real-account path** (the same indexed
+  database query either way, plus one extra HMAC-SHA256 computation on
+  the not-found path to build the deterministic fake salt). The resulting
+  timing difference, if anything, makes real accounts respond *faster*,
+  which is the safe direction, and is a computation on the order of
+  microseconds — almost certainly undetectable under real network
+  latency/jitter. No fix applied; noted as available headroom for future
+  hardening (e.g. always computing the HMAC and discarding it on the
+  found-account path), not a practical enumeration vector today.
+
+- **Confirmed correct — specifically checked, nothing to fix:**
+  - No key or plaintext reaches the server in any code path (traced every
+    network call in `frontend/src/crypto/` and `frontend/src/api/client.js`).
+  - Every AES-GCM encryption uses a freshly generated random IV, never
+    cached or reused (confirmed by code review and by an automated test
+    asserting two encryptions of identical plaintext produce different
+    IVs/ciphertext).
+  - The session ID regenerates on every authentication event — register,
+    login, unlock, and password change — closing the standard
+    session-fixation vector; no path establishes an authenticated session
+    without regenerating first.
+  - Every mutating endpoint operating on an existing session enforces the
+    double-submit CSRF check; the only two without it (register, login)
+    are the documented, reasoned exception above.
+  - Every database query touching `vaults` or `users` is scoped to
+    `$userId` from the server-side session (`pk_require_auth()`), never
+    from client-supplied input — there is no endpoint in this codebase
+    that accepts an ID selecting *whose* row to read or write. No
+    cross-user vault access path exists.
+  - Login and login-salt are enumeration-resistant for account existence:
+    identical error messages, a deliberately equalized-cost dummy
+    computation on the not-found path, and a deterministic fake salt
+    response. Registration's "email already exists" conflict is the one
+    deliberate exception to this — see `docs/THREAT-MODEL.md` for why
+    that's a different, lower-stakes case, not an oversight.
+
+### Known limitations carried forward
+
+Not defects — accepted, documented trade-offs. See README.md's "Security"
+section and `docs/THREAT-MODEL.md` for the full reasoning:
+
+- A compromised server can still serve tampered JavaScript and capture the
+  master password directly as it's typed; no purely browser-based
+  zero-knowledge design can fully close this.
+- No two-factor authentication yet (the schema reserves a column for it;
+  no TOTP flow exists).
+- No cross-device session revocation — native PHP sessions have no
+  central index by user, so a password change rotates the current
+  session but can't reach into others.
+- Offline brute-force resistance is bounded by the master password's
+  strength; Argon2id raises the cost per guess, it doesn't make a weak
+  password safe against a stolen database.

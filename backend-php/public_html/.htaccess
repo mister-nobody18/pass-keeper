@@ -1,0 +1,60 @@
+# Applies to the whole web root: the static frontend build AND /api/*.php.
+#
+# IMPORTANT: `Header always set` runs in the output filter, AFTER a PHP
+# script has already generated its own headers - "always set" REPLACES
+# whatever PHP sent for the same header name, it does not defer to it. That
+# means the Content-Security-Policy below must NOT be applied to /api/*
+# requests, or it would silently overwrite the much stricter
+# `default-src 'none'` CSP that lib/security_headers.php sets for every API
+# JSON response, weakening it without anyone noticing. The env=SPA_CONTEXT
+# condition below exists specifically to prevent that. The other headers
+# (X-Content-Type-Options, X-Frame-Options, etc.) are safe to apply
+# unconditionally because PHP sets those to the same values anyway.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Force HTTPS. Several properties this app relies on (Secure cookies, the
+    # meaningfulness of TLS for protecting the auth hash in transit) depend
+    # on this actually being in effect - see docs/THREAT-MODEL.md.
+    RewriteCond %{HTTPS} off
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+    # Flags every request NOT under /api/ so the SPA-specific CSP below only
+    # ever applies to the static frontend, never to a PHP API response.
+    RewriteCond %{REQUEST_URI} !^/api/
+    RewriteRule ^ - [E=SPA_CONTEXT:1]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
+    # Tuned for the frontend SPA: same-origin only, no inline scripts, but
+    # 'wasm-unsafe-eval' is required for the Argon2id WebAssembly module
+    # (frontend/src/crypto/kdfWorker.js) to instantiate at all - see
+    # docs/ARCHITECTURE.md §5. style-src allows 'unsafe-inline' only for the
+    # one dynamic inline style in VaultCard.jsx (an avatar background color).
+    # Applied ONLY to non-/api/ requests - see the note above.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" env=SPA_CONTEXT
+</IfModule>
+
+# Never serve dotfiles (.env, .git/*, .htaccess itself, etc.) from here, even by mistake.
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# Belt-and-suspenders: config/secrets and database dumps should never exist
+# under public_html/ at all (see docs/DEPLOYMENT.md's layout - they live in
+# sibling directories outside the web root, which is the real protection).
+# Blocked here anyway in case a stray file ever ends up here by mistake.
+<FilesMatch "\.(sql|sql\.gz|env|ini|log|bak|backup)$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "^config\.php$">
+    Require all denied
+</FilesMatch>

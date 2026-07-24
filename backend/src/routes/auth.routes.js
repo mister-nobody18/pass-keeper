@@ -1,22 +1,12 @@
 import { Router } from 'express';
 import { registerUser, verifyLogin, AuthError, findUserById, toPublicUser } from '../services/user.service.js';
-import { createSession, destroySession, SESSION_TTL_MS } from '../services/session.service.js';
+import { createSession, destroySession } from '../services/session.service.js';
 import { loginLimiter, registerLimiter } from '../middleware/rateLimiter.js';
 import requireAuth, { SESSION_COOKIE } from '../middleware/requireAuth.js';
 import { issueCsrfCookie, CSRF_COOKIE } from '../middleware/csrf.js';
+import { sessionCookieOptions } from '../utils/cookies.js';
 
 const router = Router();
-
-function sessionCookieOptions() {
-    return {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        signed: true,
-        path: '/',
-        maxAge: SESSION_TTL_MS,
-    };
-}
 
 function establishSession(res, user, dek) {
     const sessionId = createSession(user, dek);

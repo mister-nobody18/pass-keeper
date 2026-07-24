@@ -1,5 +1,11 @@
 const BASE = '/api';
 
+// Paths where a 401 means "bad credentials" or "no such account," not "your
+// session expired" - those must never trigger the global session-expiry
+// event below, or a failed login/register would immediately wipe out any
+// (unrelated) existing session.
+const AUTH_ENTRY_PATHS = ['/register.php', '/login.php'];
+
 function getCookie(name) {
     const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
     return match ? decodeURIComponent(match[1]) : null;
@@ -8,16 +14,24 @@ function getCookie(name) {
 async function request(path, { method = 'GET', body } = {}) {
     const headers = { 'Content-Type': 'application/json' };
     if (method !== 'GET') {
-        const csrfToken = getCookie('csrfToken');
-        if (csrfToken) headers['x-csrf-token'] = csrfToken;
+        const csrfToken = getCookie('pk_csrf');
+        if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
     }
 
-    const res = await fetch(`${BASE}${path}`, {
-        method,
-        headers,
-        credentials: 'include',
-        body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    try {
+        res = await fetch(`${BASE}${path}`, {
+            method,
+            headers,
+            credentials: 'include',
+            body: body ? JSON.stringify(body) : undefined,
+        });
+    } catch (networkErr) {
+        const err = new Error('Could not reach the server. Check your connection and try again.');
+        err.isNetworkError = true;
+        err.cause = networkErr;
+        throw err;
+    }
 
     let data = null;
     try {
@@ -27,22 +41,26 @@ async function request(path, { method = 'GET', body } = {}) {
     }
 
     if (!res.ok) {
-        throw new Error(data?.error || `Request failed (${res.status})`);
+        const err = new Error(data?.error || `Request failed (${res.status})`);
+        err.status = res.status;
+        err.data = data; // some endpoints (vault PUT/change-password conflicts) attach extra fields, e.g. currentRevision
+        if (res.status === 401 && !AUTH_ENTRY_PATHS.includes(path)) {
+            window.dispatchEvent(new CustomEvent('pk:session-expired'));
+        }
+        throw err;
     }
     return data;
 }
 
 export const api = {
-    register: (email, password) => request('/auth/register', { method: 'POST', body: { email, password } }),
-    login: (email, password) => request('/auth/login', { method: 'POST', body: { email, password } }),
-    logout: () => request('/auth/logout', { method: 'POST' }),
-    me: () => request('/auth/me'),
+    me: () => request('/me.php'),
+    register: (payload) => request('/register.php', { method: 'POST', body: payload }),
+    getLoginSalt: (email) => request(`/login_salt.php?email=${encodeURIComponent(email)}`),
+    login: (payload) => request('/login.php', { method: 'POST', body: payload }),
+    logout: () => request('/logout.php', { method: 'POST' }),
 
-    listEntries: () => request('/vault'),
-    createEntry: (entry) => request('/vault', { method: 'POST', body: entry }),
-    updateEntry: (id, entry) => request(`/vault/${id}`, { method: 'PUT', body: entry }),
-    deleteEntry: (id) => request(`/vault/${id}`, { method: 'DELETE' }),
+    getVault: () => request('/vault.php'),
+    putVault: (payload) => request('/vault.php', { method: 'PUT', body: payload }),
 
-    changePassword: (currentPassword, newPassword) =>
-        request('/settings/password', { method: 'PUT', body: { currentPassword, newPassword } }),
+    changePassword: (payload) => request('/change_password.php', { method: 'PUT', body: payload }),
 };

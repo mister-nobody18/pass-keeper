@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import authRoutes from './routes/auth.routes.js';
 import vaultRoutes from './routes/vault.routes.js';
 import settingsRoutes from './routes/settings.routes.js';
+import { apiLimiter } from './middleware/rateLimiter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,9 +19,33 @@ if (!process.env.COOKIE_SECRET) {
 const app = express();
 
 app.disable('x-powered-by');
-app.use(helmet());
+// Explicit CSP tuned to this app's actual asset sources: the built SPA is same-origin,
+// module-script only, no CDNs/fonts/images from elsewhere. style-src allows 'unsafe-inline'
+// only for the one dynamic inline `style` attribute used in VaultCard.jsx (Tailwind handles
+// everything else via static classes, so no <style>/script inline content is needed).
+app.use(
+    helmet({
+        contentSecurityPolicy: {
+            directives: {
+                defaultSrc: ["'self'"],
+                scriptSrc: ["'self'"],
+                styleSrc: ["'self'", "'unsafe-inline'"],
+                imgSrc: ["'self'", 'data:'],
+                fontSrc: ["'self'"],
+                connectSrc: ["'self'"],
+                objectSrc: ["'none'"],
+                baseUri: ["'self'"],
+                formAction: ["'self'"],
+                frameAncestors: ["'none'"],
+            },
+        },
+    })
+);
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser(process.env.COOKIE_SECRET));
+
+// Loose ceiling on all API traffic; auth-critical endpoints layer stricter limiters on top.
+app.use('/api', apiLimiter);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/vault', vaultRoutes);
