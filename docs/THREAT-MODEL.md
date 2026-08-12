@@ -195,18 +195,24 @@ metadata. None of this reveals vault *contents*, but it is not nothing —
 document it as a known, accepted limitation rather than pretending the
 system leaks zero information.
 
-### 2.5 Permanent, unrecoverable data loss on a forgotten master password
+### 2.5 Data loss on a forgotten master password without a recovery key
 
-Not a third-party attack, but a critical property to be explicit about: this
-design has, by construction, no "forgot password" recovery path for the
-vault's contents. The server cannot decrypt the vault under any
-circumstances, including a legitimate request from the account owner who
-forgot their password — because the server never had the key. This is the
-correct trade-off for genuine zero-knowledge (a recoverable system is a
-system where the server, or someone who compromises it, can also recover
-your data), but it means the UI and documentation must make this
-unambiguous *before* a user picks a master password, not after they've lost
-one. See the warning required in `README.md`.
+An email-based reset flow exists (`docs/ARCHITECTURE.md` §6), but it does
+not change the underlying zero-knowledge property: the server never has,
+and never can have, the ability to decrypt a vault it wasn't given a key
+for. What the reset flow adds is a *second*, independently-derived key — the
+recovery key, generated client-side and shown exactly once — that can
+unlock the same vault DEK the master password unlocks. If a user set one up
+and still has it, a reset is data-preserving. If they never set one up, or
+have lost it too, a reset can only start a brand-new, empty vault; the old
+ciphertext is not retained anywhere server-side and is not recoverable by
+this project, its operator, or anyone else, at that point. This is the
+correct trade-off for genuine zero-knowledge (a system where the server can
+unilaterally recover your data is a system where whoever compromises the
+server can too) — it means the UI and documentation must make the recovery
+key's importance unambiguous *before* a user needs it, not after. See
+`README.md`'s warning and §2.8 below for the reset flow's own specific
+risks.
 
 ### 2.6 Denial of service and shared-hosting-specific operational risk
 
@@ -224,6 +230,81 @@ in-memory sliding-window limiter the Node prototype used — a burst
 straddling a window boundary can allow up to roughly double the nominal
 limit in the worst case. Acceptable at this population size; noted so it's
 a documented trade-off, not a silent gap.
+
+### 2.8 The password-reset flow's own specific risks
+
+The reset flow (`docs/ARCHITECTURE.md` §6) introduces attack surface that
+didn't exist before it. Each point below is either mitigated in the
+implementation (and how) or accepted as a residual risk (and why).
+
+**Reset-token handling.** The raw token is 256 bits of `random_bytes()` —
+not brute-forceable — and only its SHA-256 hash is ever stored
+(`password_resets.token_hash`), the same reasoning as never storing a raw
+password or session token: a database leak doesn't hand over usable, live
+reset links. Consumption is a single atomic `UPDATE ... WHERE used_at IS
+NULL AND expires_at > NOW()`, checked via `rowCount()` — a token can be
+claimed exactly once even under concurrent requests for the same link
+(e.g., a user double-clicking, or a network retry). Tokens expire after 10
+minutes by default (`config.php`'s `password_reset.expiry_minutes`) and
+requesting a new one invalidates any prior unused one for that account, so
+only one link is ever live. All of this depends on TLS being enforced (§1's
+standing assumption) — a token traveling over plain HTTP would be as
+exposed as any other bearer credential in transit.
+
+**Recovery-key blast radius.** The recovery key is a bearer secret with the
+same practical reach as the master password: whoever has it can derive
+`recoveryWrapKey` and unwrap the vault's DEK, without ever knowing the
+password. It is never transmitted or stored anywhere, by this project, in
+any form other than the opaque `wrapped_dek_recovery` blob it produces —
+but that guarantee is only as good as where the *user* stores their copy
+after it's shown to them once. This is identical in kind to the master
+password's own exposure surface (§2.3: a compromised device, a careless
+paste into the wrong place, a screenshot backed up somewhere insecure) and
+is called out explicitly in the UI (`RecoveryKeyDisplay.jsx`'s warning
+copy and required acknowledgment) precisely because it's easy to
+under-appreciate: it doesn't feel like "the password" to a user, but it
+functions as one.
+
+**Email-bombing / reset-request abuse.** Without a limit, an unauthenticated
+`password_reset_request.php` would let anyone spam another person's inbox
+with reset emails just by knowing their address. Mitigated with a tight
+rate limit on the request endpoint, keyed *both* by IP and by a SHA-256 hash
+of the target email (mirroring `login.php`'s dual-bucket pattern) — an
+attacker spreading requests across many IPs still hits the per-account
+limit. This does not, and cannot, prevent a single request from a legitimate
+IP; the limit bounds the *volume*, not the ability to trigger one email.
+
+**The endpoint doesn't reveal account existence.**
+`password_reset_request.php` returns the identical generic message
+("If an account exists for that email...") whether or not the account
+exists, and performs the same shape of work (a token is only generated and
+an email only sent when a matching account is found, but the response and
+its approximate timing don't broadcast which case occurred) — consistent
+with `login.php`'s enumeration-resistance posture, and unlike
+`register.php`'s deliberately-not-resistant "email already in use" (§1,
+`README.md`'s API reference).
+
+**The destructive path's data loss is deliberate, not a bug.** Resetting
+without a recovery key intentionally discards the old vault ciphertext with
+no CAS guard and no soft-delete — there is nothing left to preserve once the
+new empty vault is written, by the same zero-knowledge reasoning as §2.5.
+The UI requires an explicit, separate acknowledgment checkbox before this
+path can be submitted (distinct from the recovery-key path's own
+confirmation), specifically so this isn't something a user can trigger by
+default or by accident while trying to do the (much more common)
+recovery-key-preserving reset instead.
+
+**Anyone with inbox access can trigger a reset.** This is inherent to any
+email-based reset flow, not specific to this implementation: an attacker who
+compromises the account's associated mailbox can request and complete a
+reset. Without the recovery key, they can only force a *destructive* reset
+(wiping data, not reading it) — they cannot read existing vault contents
+this way, since the DEK for the *old* vault is never reachable without
+either the old master password or the recovery key. With the recovery key
+*and* inbox access, they could complete a data-preserving reset and then
+have full vault access, same as if they'd obtained the master password
+directly. Protecting the mailbox tied to an account matters accordingly;
+this is stated in `README.md` rather than left implicit.
 
 ---
 

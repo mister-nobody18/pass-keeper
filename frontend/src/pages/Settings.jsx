@@ -1,22 +1,24 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, CheckCircle2, KeyRound } from 'lucide-react';
+import { AlertCircle, ArrowLeft, CheckCircle2, KeyRound, RefreshCw, ShieldQuestion } from 'lucide-react';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useVaultLock } from '../context/VaultLockContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { deriveKeys, generateKdfSalt, DEFAULT_KDF_PARAMS } from '../crypto/kdfClient.js';
-import { encryptVault, decryptVault, VaultDecryptionError } from '../crypto/vaultCipher.js';
+import { wrapDek, unwrapDekForRewrap, DekUnwrapError } from '../crypto/dek.js';
+import { generateRecoveryKey, deriveRecoveryWrapKey } from '../crypto/recoveryKey.js';
 import { setVaultKey } from '../crypto/vaultKeyStore.js';
 import TopBar from '../components/TopBar.jsx';
 import Panel from '../components/ui/Panel.jsx';
 import Input from '../components/ui/Input.jsx';
 import Button from '../components/ui/Button.jsx';
 import PasswordStrengthMeter from '../components/ui/PasswordStrengthMeter.jsx';
+import RecoveryKeyDisplay from '../components/RecoveryKeyDisplay.jsx';
 
 const PHASE_LABEL = {
     'deriving-current': 'Deriving current key…',
-    'decrypting': 'Verifying current password…',
+    'unwrapping': 'Verifying current password…',
     'deriving-new': 'Deriving new key…',
     'saving': 'Saving…',
 };
@@ -31,6 +33,13 @@ export default function Settings() {
     const [error, setError] = useState('');
     const [success, setSuccess] = useState(false);
     const [phase, setPhase] = useState(null);
+
+    const [recoveryKeyCreatedAt, setRecoveryKeyCreatedAt] = useState(user?.recoveryKeyCreatedAt ?? null);
+    const [showRecoveryPrompt, setShowRecoveryPrompt] = useState(false);
+    const [recoveryPassword, setRecoveryPassword] = useState('');
+    const [recoveryError, setRecoveryError] = useState('');
+    const [recoveryPhase, setRecoveryPhase] = useState(null);
+    const [newRecoveryKey, setNewRecoveryKey] = useState(null);
 
     async function handleChangePassword(e) {
         e.preventDefault();
@@ -47,49 +56,50 @@ export default function Settings() {
         }
 
         try {
-            // 1. Re-derive the CURRENT key from the typed current password, using
-            //    this account's existing (possibly older, lower-cost) stored params.
+            // 1. Re-derive the CURRENT wrap key from the typed current password,
+            //    using this account's existing (possibly older, lower-cost)
+            //    stored params.
             setPhase('deriving-current');
             const { kdfSalt: currentSalt, kdfParams: currentParamsJson } = await api.getLoginSalt(user.email);
-            const { authHash: currentAuthHash, encryptionKey: currentKey } = await deriveKeys(
+            const { authHash: currentAuthHash, encryptionKey: currentWrapKey } = await deriveKeys(
                 currentPassword,
                 currentSalt,
                 JSON.parse(currentParamsJson)
             );
 
-            // 2. Prove that key is actually correct by using it for real, against
-            //    the real vault - not just trusting the typed password. A wrong
-            //    current password fails right here, locally, as a normal GCM
-            //    decrypt failure (see crypto/vaultCipher.js), before any request
-            //    that would touch the server's rate limit for this account.
-            setPhase('decrypting');
-            const { ciphertext, revision } = await api.getVault();
-            let entries;
+            // 2. Prove that key is actually correct by unwrapping the real DEK
+            //    with it - not just trusting the typed password. A wrong
+            //    current password fails right here, locally, as a normal
+            //    unwrap failure (see crypto/dek.js), before any request that
+            //    would touch the server's rate limit for this account. Uses
+            //    the "for rewrap" variant since we need an extractable copy
+            //    to wrap again under the new key below.
+            setPhase('unwrapping');
+            const { wrappedDekPassword } = await api.me();
+            let dekForRewrap;
             try {
-                entries = await decryptVault(ciphertext, currentKey);
+                dekForRewrap = await unwrapDekForRewrap(wrappedDekPassword, currentWrapKey);
             } catch (err) {
-                if (err instanceof VaultDecryptionError) {
+                if (err instanceof DekUnwrapError) {
                     throw new Error('Current password is incorrect.');
                 }
                 throw err;
             }
 
-            // 3. Derive a FRESH key from the new password, with a fresh salt and
-            //    the current DEFAULT_KDF_PARAMS - this is how an account's KDF
-            //    parameters actually get upgraded over time (see
-            //    CONTRIBUTING.md): the next time this account picks a new
-            //    password, it re-keys under whatever parameters are current then.
+            // 3. Derive a FRESH wrap key from the new password, with a fresh
+            //    salt and the current DEFAULT_KDF_PARAMS, and re-wrap the SAME
+            //    DEK under it. The vault ciphertext itself never moves.
             setPhase('deriving-new');
             const newSalt = generateKdfSalt();
-            const { authHash: newAuthHash, encryptionKey: newKey } = await deriveKeys(
+            const { authHash: newAuthHash, encryptionKey: newWrapKey } = await deriveKeys(
                 newPassword,
                 newSalt,
                 DEFAULT_KDF_PARAMS
             );
-            const newVaultCiphertext = await encryptVault(entries, newKey);
+            const newWrappedDekPassword = await wrapDek(dekForRewrap, newWrapKey);
 
-            // 4. Server commits the new auth hash and the re-encrypted vault
-            //    together, or neither - see backend-php/public_html/api/change_password.php.
+            // 4. Server commits the new auth hash + wrap in one statement -
+            //    see backend-php/public_html/api/change_password.php.
             setPhase('saving');
             try {
                 await api.changePassword({
@@ -97,13 +107,12 @@ export default function Settings() {
                     newAuthHash,
                     newKdfSalt: newSalt,
                     newKdfParams: JSON.stringify(DEFAULT_KDF_PARAMS),
-                    newVaultCiphertext,
-                    expectedVaultRevision: revision,
+                    newWrappedDekPassword,
                 });
             } catch (err) {
                 if (err.isNetworkError) {
                     // The request may have reached the server and committed
-                    // before the connection dropped - the server transaction
+                    // before the connection dropped - the server statement
                     // is atomic (see change_password.php), but from here we
                     // genuinely can't tell whether it ran. Don't imply
                     // "nothing happened": that would send the user back to
@@ -118,7 +127,8 @@ export default function Settings() {
                 throw err;
             }
 
-            setVaultKey(newKey);
+            const workingDek = await unwrapDekForRewrap(newWrappedDekPassword, newWrapKey);
+            setVaultKey(workingDek);
             setSuccess(true);
             setCurrentPassword('');
             setNewPassword('');
@@ -132,7 +142,61 @@ export default function Settings() {
         }
     }
 
+    async function handleGenerateRecoveryKey(e) {
+        e.preventDefault();
+        setRecoveryError('');
+
+        try {
+            setRecoveryPhase('deriving');
+            const { kdfSalt, kdfParams } = await api.getLoginSalt(user.email);
+            const { authHash, encryptionKey: passwordWrapKey } = await deriveKeys(
+                recoveryPassword,
+                kdfSalt,
+                JSON.parse(kdfParams)
+            );
+
+            setRecoveryPhase('verifying');
+            const { wrappedDekPassword } = await api.me();
+            let dekForRewrap;
+            try {
+                dekForRewrap = await unwrapDekForRewrap(wrappedDekPassword, passwordWrapKey);
+            } catch (err) {
+                if (err instanceof DekUnwrapError) {
+                    throw new Error('Current password is incorrect.');
+                }
+                throw err;
+            }
+
+            setRecoveryPhase('generating');
+            const { raw, formatted } = generateRecoveryKey();
+            const recoveryWrapKey = await deriveRecoveryWrapKey(raw);
+            const wrappedDekRecovery = await wrapDek(dekForRewrap, recoveryWrapKey);
+
+            setRecoveryPhase('saving');
+            const { recoveryKeyCreatedAt: createdAt } = await api.updateRecoveryKey({
+                currentAuthHash: authHash,
+                newWrappedDekRecovery: wrappedDekRecovery,
+            });
+
+            setRecoveryKeyCreatedAt(createdAt);
+            setNewRecoveryKey(formatted);
+            setShowRecoveryPrompt(false);
+            setRecoveryPassword('');
+        } catch (err) {
+            setRecoveryError(err.message);
+        } finally {
+            setRecoveryPhase(null);
+        }
+    }
+
     const submitting = phase !== null;
+    const recoverySubmitting = recoveryPhase !== null;
+    const RECOVERY_PHASE_LABEL = {
+        deriving: 'Deriving key…',
+        verifying: 'Verifying current password…',
+        generating: 'Generating recovery key…',
+        saving: 'Saving…',
+    };
 
     return (
         <div className="mx-auto max-w-3xl p-4 sm:p-6">
@@ -151,7 +215,7 @@ export default function Settings() {
             <Panel padding="lg" className="mb-6">
                 <h3 className="font-medium text-ink-primary">Change master password</h3>
                 <p className="mb-4 mt-1 text-sm text-ink-secondary">
-                    Your vault stays intact — it's decrypted and re-encrypted under your new password
+                    Your vault stays intact — only how its encryption key is protected changes,
                     entirely in your browser.
                 </p>
 
@@ -217,6 +281,105 @@ export default function Settings() {
                         {submitting ? PHASE_LABEL[phase] : 'Update password'}
                     </Button>
                 </form>
+            </Panel>
+
+            <Panel padding="lg" className="mb-6">
+                {newRecoveryKey ? (
+                    <RecoveryKeyDisplay
+                        recoveryKey={newRecoveryKey}
+                        onContinue={() => setNewRecoveryKey(null)}
+                        continueLabel="Done"
+                    />
+                ) : (
+                    <>
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <h3 className="font-medium text-ink-primary">Recovery key</h3>
+                                <p className="mt-1 text-sm text-ink-secondary">
+                                    Lets you get back into your vault if you forget your master password,
+                                    without losing your data.
+                                </p>
+                                <p className="mt-2 text-sm">
+                                    {recoveryKeyCreatedAt ? (
+                                        <span className="inline-flex items-center gap-1.5 text-success">
+                                            <CheckCircle2 size={14} aria-hidden="true" />
+                                            Set up {new Date(recoveryKeyCreatedAt).toLocaleDateString()}
+                                        </span>
+                                    ) : (
+                                        <span className="inline-flex items-center gap-1.5 text-warning">
+                                            <ShieldQuestion size={14} aria-hidden="true" />
+                                            Not set up — a lost password would mean a fresh, empty vault.
+                                        </span>
+                                    )}
+                                </p>
+                            </div>
+                            {!showRecoveryPrompt && (
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    leftIcon={<RefreshCw size={14} aria-hidden="true" />}
+                                    onClick={() => {
+                                        setShowRecoveryPrompt(true);
+                                        setRecoveryError('');
+                                    }}
+                                >
+                                    {recoveryKeyCreatedAt ? 'Regenerate' : 'Set up'}
+                                </Button>
+                            )}
+                        </div>
+
+                        {showRecoveryPrompt && (
+                            <form onSubmit={handleGenerateRecoveryKey} className="mt-4 max-w-sm space-y-4" noValidate>
+                                <p className="text-sm text-ink-secondary">
+                                    Confirm your current master password.
+                                    {recoveryKeyCreatedAt && ' Your existing recovery key will stop working.'}
+                                </p>
+                                <Input
+                                    id="recovery-current-password"
+                                    type="password"
+                                    label="Current password"
+                                    required
+                                    autoComplete="current-password"
+                                    autoFocus
+                                    disabled={recoverySubmitting}
+                                    leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                                    value={recoveryPassword}
+                                    onChange={(e) => setRecoveryPassword(e.target.value)}
+                                />
+
+                                {recoveryError && (
+                                    <div
+                                        role="alert"
+                                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                                    >
+                                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                        <span>{recoveryError}</span>
+                                    </div>
+                                )}
+
+                                <div className="flex gap-2">
+                                    <Button type="submit" size="sm" loading={recoverySubmitting}>
+                                        {recoverySubmitting ? RECOVERY_PHASE_LABEL[recoveryPhase] : 'Generate recovery key'}
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        disabled={recoverySubmitting}
+                                        onClick={() => {
+                                            setShowRecoveryPrompt(false);
+                                            setRecoveryPassword('');
+                                            setRecoveryError('');
+                                        }}
+                                    >
+                                        Cancel
+                                    </Button>
+                                </div>
+                            </form>
+                        )}
+                    </>
+                )}
             </Panel>
 
             <Panel padding="lg">

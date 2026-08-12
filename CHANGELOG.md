@@ -3,6 +3,76 @@
 This project doesn't cut versioned releases yet — entries are grouped by
 migration/audit milestone instead of a version number.
 
+## Master-password reset via recovery key — 2026-08-12
+
+### Added
+
+- **Envelope encryption for the vault's key.** A random Data Encryption Key
+  (the DEK) now actually encrypts the vault; it's wrapped (via native
+  `crypto.subtle.wrapKey()`/`unwrapKey()`, never manual export-then-encrypt)
+  under a key derived from the master password, and optionally a second,
+  independent key derived from a recovery key. Either wrap alone unwraps the
+  identical DEK. See `docs/ARCHITECTURE.md` §6 for the full design and
+  `frontend/src/crypto/dek.js`.
+- **Recovery key**: a 160-bit random value, Base32-encoded and grouped
+  (`XXXX-XXXX-...`), generated client-side and shown exactly once —
+  never transmitted or stored in raw form anywhere. Offered at
+  registration (skippable) and settable/rotatable any time afterward from
+  Settings. `frontend/src/crypto/recoveryKey.js`, `components/
+  RecoveryKeyDisplay.jsx`, `api/recovery_key.php`.
+- **Password reset flow**: `ForgotPassword.jsx` (request a link by email,
+  always the same generic response) and `ResetPassword.jsx` (verify the
+  token, then either a recovery-key path that preserves the vault, or an
+  explicit, checkbox-gated destructive path that starts a fresh empty vault
+  and immediately offers a new recovery key). Backend: `lib/password_reset.
+  php` (256-bit tokens, only the SHA-256 hash ever stored, single-use via an
+  atomic claim), `lib/mailer.php` (PHP native `mail()`, zero dependencies),
+  `api/password_reset_request.php`, `api/password_reset_verify.php`,
+  `api/password_reset_confirm.php`.
+- New `users` columns (`wrapped_dek_password`, `wrapped_dek_recovery`,
+  `recovery_key_created_at`) and a new `password_resets` table —
+  `backend-php/schema.sql`.
+- New rate-limit buckets: `password_reset_request` (by IP *and* by
+  account-email hash — an unthrottled reset-request endpoint is a
+  ready-made way to email-bomb someone else's inbox), `password_reset_
+  verify`, `password_reset_confirm`.
+- `docs/ARCHITECTURE.md` §6, a new `docs/THREAT-MODEL.md` §2.8 on the reset
+  flow's specific risks (token handling, recovery-key blast radius,
+  email-bombing mitigation, the destructive path's deliberate data loss),
+  and updates to `README.md`'s security section, API reference, and the
+  top-of-file warning (no longer an unconditional "no forgot password").
+
+### Changed
+
+- **`change_password.php` simplified.** Under the envelope model, changing
+  your master password only re-wraps the DEK — the vault ciphertext never
+  moves. What was a cross-table transaction with an optimistic-concurrency
+  guard on the vault write is now a single atomic `UPDATE users` statement.
+  The endpoint's request/response shape changed accordingly (see `README.md`
+  API reference) — this is a breaking change to that endpoint's contract,
+  not just an internal refactor.
+- `register.php`/`login.php` request/response shapes changed to carry the
+  wrapped DEK(s) instead of a directly-password-encrypted vault blob.
+- `crypto/kdfWorker.js`'s derived AES-GCM key now has `wrapKey`/`unwrapKey`
+  usages instead of `encrypt`/`decrypt` — it wraps the DEK now, rather than
+  encrypting the vault directly. No change to the Argon2id/HKDF parameters
+  or pipeline itself.
+
+### Fixed
+
+- **A real race condition caught during this feature's own end-to-end
+  testing, not a pre-existing bug:** `AuthContext.register()` originally
+  called `setUser()` as its last step. Since `Register.jsx` is wrapped in
+  `PublicOnlyRoute` (which redirects to `/` the instant `user` becomes
+  truthy), that redirect fired before the newly-added recovery-key display
+  could even render — the screen would flash and disappear, or in a
+  scripted/fast-network test, never appear at all. Fixed by having
+  `register()` return the pending user/DEK without committing them to
+  React state; `Register.jsx` now only calls `setUser()`/`setVaultKey()`
+  once the user has acknowledged the recovery key and clicked continue. The
+  destructive reset path in `ResetPassword.jsx` was written with the same
+  deferral from the start, having learned from this.
+
 ## PHP/MySQL migration + browser-side crypto — 2026-07-24
 
 ### Added

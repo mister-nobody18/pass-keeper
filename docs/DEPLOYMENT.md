@@ -33,7 +33,11 @@ does and doesn't protect against.
         ├── login.php
         ├── logout.php
         ├── vault.php
-        └── change_password.php
+        ├── change_password.php
+        ├── recovery_key.php
+        ├── password_reset_request.php
+        ├── password_reset_verify.php
+        └── password_reset_confirm.php
 ```
 
 **The one fact that makes this whole layout safe:** `config/`, `lib/`,
@@ -117,11 +121,15 @@ development — nothing new to write.
 3. **Choose File** → select `schema.sql` (the copy on your own machine, from
    `backend-php/schema.sql` in this repo).
 4. Leave the format as **SQL**, click **Go**.
-5. Confirm the left sidebar now lists three tables: `users`, `vaults`,
-   `rate_limits`. Click each and check *Structure* matches what's in the
-   repo's `schema.sql` — a quick visual diff, not a formality; a
-   partially-applied import (e.g. from a connection timeout on a slow
-   upload) can leave a table silently missing a column.
+5. Confirm the left sidebar now lists four tables: `users`, `vaults`,
+   `rate_limits`, `password_resets`. Click each and check *Structure*
+   matches what's in the repo's `schema.sql` — a quick visual diff, not a
+   formality; a partially-applied import (e.g. from a connection timeout on
+   a slow upload) can leave a table silently missing a column. In
+   particular, confirm `users` has `wrapped_dek_password`,
+   `wrapped_dek_recovery`, and `recovery_key_created_at` — an old backup or
+   a stale `schema.sql` copy predating the password-reset feature would be
+   missing these.
 
 The schema uses `CREATE TABLE IF NOT EXISTS`, so re-running this same
 import later (e.g. after restoring a backup that only contains data, not
@@ -233,6 +241,18 @@ Done directly on the server, not uploaded from a laptop:
      be set — confirm SSL from step §2.7 is live *before* setting this,
      or login will silently break: a `Secure` cookie set over plain HTTP
      is simply refused by the browser).
+   - `app_url` — `'https://vault.soricu.com'`. Used only to build the link
+     inside password-reset emails; get this exactly right (including
+     `https://`, no trailing slash needed — the code trims one if present)
+     or reset links will point somewhere wrong.
+   - `mail.from_address` / `mail.from_name` — `'noreply@soricu.com'` /
+     `'Pass Keeper'` (or your own values). Confirm this mailbox actually
+     exists in DirectAdmin's **Email Accounts** first — some hosts reject
+     outbound mail with a `From` address that isn't a real, provisioned
+     mailbox on the account, even for a send-only address.
+   - `password_reset.expiry_minutes` — `10` is the default; leave as-is
+     unless you have a specific reason to change it (see
+     `docs/THREAT-MODEL.md` §2.8 for why it's kept short).
    - `fake_kdf_params` — leave as-is unless the frontend's
      `DEFAULT_KDF_PARAMS` (`frontend/src/crypto/kdfClient.js`) changes; see
      that file's comments and `CONTRIBUTING.md`'s crypto-parameters
@@ -242,6 +262,19 @@ Done directly on the server, not uploaded from a laptop:
    `public_html/`, **not** inside it (File Manager makes it easy to
    accidentally save into the wrong directory if you navigated via a
    different tab — double-check the path shown in the editor's title bar).
+
+**Mail deliverability (SPF/DKIM).** Password-reset emails are sent via PHP's
+native `mail()` — no external SMTP relay. For them to reliably land in an
+inbox instead of spam (or get silently dropped by the recipient's mail
+provider), configure SPF and DKIM for `soricu.com` in DirectAdmin: **DNS
+Management** → confirm an `SPF` (`TXT`) record exists authorizing this
+server's outbound mail, and **Email** → **DKIM** → enable it for the domain
+if not already on (DirectAdmin usually generates and manages this key pair
+for you — it just needs to be turned on and the resulting DNS record
+published, which DirectAdmin does automatically once enabled). Skipping
+this doesn't break the feature technically, but reset emails may not
+reliably arrive, which from a user's perspective looks identical to the
+feature being broken.
 
 **Before trusting any of this in production**, confirm the host's PHP
 actually has Argon2id support — check DirectAdmin's **PHP Selector** / **PHP
@@ -327,6 +360,16 @@ included files it shouldn't have.
    after. Confirm a `.sql.gz` file appears in
    `domains/vault.soricu.com/backups/` via File Manager, and that you
    received (or can see logged) the row-count output.
+8. **Trigger a real password-reset email.** From the login page, click
+   "Forgot password?", submit the test account's real email address, and
+   confirm the email actually arrives (check spam too) within a minute or
+   two. Click the link, confirm it lands on `/reset-password` with a valid
+   (not "invalid/expired") token, and complete a reset. If the email never
+   arrives, check DirectAdmin's mail queue/logs (**Email** → **Email
+   Queue** or equivalent) before assuming the app is broken — this is very
+   often an SPF/DKIM or mailbox-existence issue (see §5's mail note), not a
+   PHP one; `mail()` returning `true` only means the message was accepted
+   for local delivery, not that it was delivered.
 
-If all seven pass, the deployment matches the architecture documented in
+If all eight pass, the deployment matches the architecture documented in
 `docs/ARCHITECTURE.md` and `docs/THREAT-MODEL.md`.

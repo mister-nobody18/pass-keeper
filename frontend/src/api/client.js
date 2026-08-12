@@ -63,4 +63,13 @@ export const api = {
     putVault: (payload) => request('/vault.php', { method: 'PUT', body: payload }),
 
     changePassword: (payload) => request('/change_password.php', { method: 'PUT', body: payload }),
+    updateRecoveryKey: (payload) => request('/recovery_key.php', { method: 'PUT', body: payload }),
+
+    // None of these three can return 401 under normal operation (none of
+    // them require an existing session - see backend-php/public_html/api/
+    // password_reset_*.php), so they don't need special handling in
+    // AUTH_ENTRY_PATHS above the way login/register do.
+    requestPasswordReset: (email) => request('/password_reset_request.php', { method: 'POST', body: { email } }),
+    verifyPasswordResetToken: (token) => request(`/password_reset_verify.php?token=${encodeURIComponent(token)}`),
+    confirmPasswordReset: (payload) => request('/password_reset_confirm.php', { method: 'POST', body: payload }),
 };

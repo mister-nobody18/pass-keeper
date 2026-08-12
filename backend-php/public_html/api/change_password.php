@@ -14,18 +14,16 @@ $db = pk_db();
 // isn't attacker-controlled; adding IP to the bucket key would let an
 // attacker who already holds a stolen session cookie bypass the limit
 // simply by rotating their apparent source IP (proxy pool, VPN, mobile
-// network churn), making unlimited current-password guesses. See the
-// audit note in CHANGELOG.md.
+// network churn), making unlimited current-password guesses. See CHANGELOG.md.
 pk_rate_limit_endpoint($db, $pkConfig, 'change_password', 'user:' . $userId);
 
 $body = pk_read_json_body();
 
-$currentAuthHash    = $body['currentAuthHash'] ?? null;
-$newAuthHash        = $body['newAuthHash'] ?? null;
-$newKdfSalt         = $body['newKdfSalt'] ?? null;
-$newKdfParams       = $body['newKdfParams'] ?? null;
-$newVaultCiphertext = $body['newVaultCiphertext'] ?? null;
-$expectedRevision   = $body['expectedVaultRevision'] ?? null;
+$currentAuthHash       = $body['currentAuthHash'] ?? null;
+$newAuthHash           = $body['newAuthHash'] ?? null;
+$newKdfSalt            = $body['newKdfSalt'] ?? null;
+$newKdfParams          = $body['newKdfParams'] ?? null;
+$newWrappedDekPassword = $body['newWrappedDekPassword'] ?? null;
 
 if (!pk_valid_string($currentAuthHash, 16, 512) || !pk_valid_string($newAuthHash, 16, 512)) {
     pk_error_response('Current and new auth hashes are required.', 400);
@@ -33,13 +31,9 @@ if (!pk_valid_string($currentAuthHash, 16, 512) || !pk_valid_string($newAuthHash
 if (!pk_valid_string($newKdfSalt, 8, 512) || !pk_valid_string($newKdfParams, 2, 512)) {
     pk_error_response('New KDF salt and parameters are required.', 400);
 }
-if (!pk_valid_string($newVaultCiphertext, 1, 5_000_000)) {
-    pk_error_response('A valid re-encrypted vault is required.', 400);
+if (!pk_valid_string($newWrappedDekPassword, 1, 5000)) {
+    pk_error_response('A valid wrapped key is required.', 400);
 }
-if (!pk_valid_uint($expectedRevision)) {
-    pk_error_response('The current vault revision is required.', 400);
-}
-$expectedRevision = (int) $expectedRevision;
 
 $stmt = $db->prepare('SELECT auth_hash FROM users WHERE id = :id');
 $stmt->execute(['id' => $userId]);
@@ -59,58 +53,24 @@ if (!pk_verify_auth_value($currentAuthHash, $pkConfig['pepper'], $user['auth_has
     pk_error_response('Current password is incorrect.', 401);
 }
 
-$newStoredAuthHash = pk_hash_auth_value($newAuthHash, $pkConfig['pepper']);
-
-try {
-    $db->beginTransaction();
-
-    $updateUser = $db->prepare(
-        'UPDATE users SET auth_hash = :auth_hash, kdf_salt = :kdf_salt, kdf_params = :kdf_params WHERE id = :id'
-    );
-    $updateUser->execute([
-        'auth_hash'  => $newStoredAuthHash,
-        'kdf_salt'   => $newKdfSalt,
-        'kdf_params' => $newKdfParams,
-        'id'         => $userId,
-    ]);
-
-    // Same optimistic-concurrency guard as vault.php's PUT — the new blob
-    // was re-encrypted client-side from whatever revision it last read, so
-    // if the vault moved in the meantime, committing this blob would
-    // silently discard that other change. Roll back the auth-hash update
-    // too in that case: the new blob and the new auth hash must commit
-    // together, or neither commits at all.
-    $updateVault = $db->prepare(
-        'UPDATE vaults SET ciphertext = :ciphertext, revision = revision + 1
-         WHERE user_id = :user_id AND revision = :expected_revision'
-    );
-    $updateVault->execute([
-        'ciphertext'        => $newVaultCiphertext,
-        'user_id'           => $userId,
-        'expected_revision' => $expectedRevision,
-    ]);
-
-    if ($updateVault->rowCount() === 0) {
-        $db->rollBack();
-
-        $current = $db->prepare('SELECT revision FROM vaults WHERE user_id = :user_id');
-        $current->execute(['user_id' => $userId]);
-        $row = $current->fetch();
-
-        pk_json_response([
-            'error'           => 'The vault was changed elsewhere. Reload and try again.',
-            'currentRevision' => $row !== false ? (int) $row['revision'] : null,
-        ], 409);
-    }
-
-    $db->commit();
-} catch (PDOException $e) {
-    if ($db->inTransaction()) {
-        $db->rollBack();
-    }
-    error_log('Pass Keeper change-password failed: ' . $e->getMessage());
-    pk_error_response('Internal server error.', 500);
-}
+// The vault's DEK never changes on a password change - only how it's
+// wrapped. This means changing your master password no longer touches
+// `vaults` at all: a single UPDATE on `users`, atomic by nature, no
+// transaction or optimistic-concurrency dance needed. (Previously this
+// endpoint re-encrypted the whole vault and required a cross-table
+// transaction — see CHANGELOG.md for the migration that removed that.)
+$updateUser = $db->prepare(
+    'UPDATE users
+     SET auth_hash = :auth_hash, kdf_salt = :kdf_salt, kdf_params = :kdf_params, wrapped_dek_password = :wrapped_dek_password
+     WHERE id = :id'
+);
+$updateUser->execute([
+    'auth_hash'            => pk_hash_auth_value($newAuthHash, $pkConfig['pepper']),
+    'kdf_salt'             => $newKdfSalt,
+    'kdf_params'           => $newKdfParams,
+    'wrapped_dek_password' => $newWrappedDekPassword,
+    'id'                   => $userId,
+]);
 
 // Rotate the session ID as an extra precaution after a credential change.
 // This only affects THIS session/device — unlike the original Node

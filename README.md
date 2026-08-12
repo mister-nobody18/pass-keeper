@@ -4,11 +4,15 @@ A self-hosted, multi-user, zero-knowledge personal password manager, built to
 run on plain PHP + MySQL shared hosting — no Node, no Redis, no persistent
 server process, no SSH required to operate.
 
-> **⚠️ There is no "forgot password" for your vault. If you lose your master
-> password, your vault data is permanently and unrecoverably lost.** The
-> server never has, and never can have, the ability to decrypt it for you —
-> that's not a missing feature, it's the whole point of the design (see
-> below). Write your master password down somewhere safe before you need it.
+> **You can reset your master password by email — but recovering your
+> *existing vault data* requires the recovery key you were shown once at
+> setup.** With that key, a reset re-wraps your existing vault's encryption
+> key under a new password; nothing is lost. Without it, a reset can only
+> start a brand new, empty vault — the server never has, and never can have,
+> the ability to decrypt your old one for you. That's not a missing feature,
+> it's the whole point of the design (see below). **Save your recovery key
+> somewhere safe before you need it** — Settings → Recovery key lets you set
+> one up or regenerate it at any time.
 
 ## Project status
 
@@ -42,10 +46,26 @@ cannot read and never receives the key that could read it.
   `docs/ARCHITECTURE.md` §5) on it locally, in a background thread so the
   page stays responsive while it works. That produces a key, which is then
   split in two: one half proves your identity to the server (so it knows to
-  let you in), the other half encrypts your vault. Only the first half is
-  ever sent anywhere. The encryption half lives only in your browser tab's
-  memory for as long as the tab is open and unlocked — never in
-  `localStorage`, a cookie, or any other form that would outlive it.
+  let you in), the other half unlocks your vault's actual encryption key
+  (the DEK — see below). Only the first half is ever sent anywhere. The
+  vault key lives only in your browser tab's memory for as long as the tab
+  is open and unlocked — never in `localStorage`, a cookie, or any other
+  form that would outlive it.
+- **Your vault has one encryption key that never changes, protected two
+  independent ways.** A random key (the DEK) actually encrypts your vault.
+  It's never sent anywhere in raw form — only "wrapped" (itself encrypted)
+  copies of it are: one wrapped by a key derived from your master password,
+  and optionally a second wrapped by a key derived from your recovery key.
+  Either one alone can unwrap the same DEK. This is why changing your
+  password never has to touch your vault data, and why a recovery-key reset
+  can restore access without losing anything.
+- **A password reset can go two ways.** With your recovery key: the vault's
+  DEK is unwrapped using the recovery key and re-wrapped under your new
+  password — your data is untouched. Without it: a brand-new DEK and an
+  empty vault are created — your old data is unrecoverable, by design (the
+  server never had the ability to decrypt it, recovery key or not). Reset
+  links are single-use, expire in 10 minutes, and the request endpoint doesn't
+  reveal whether an email has an account.
 - **The server stores ciphertext, not your data.** Your entire vault is
   encrypted as one sealed blob (AES-256-GCM) before it's ever sent to the
   server. The server's job is to store that blob and hand it back to you —
@@ -107,10 +127,23 @@ what it found.
   or not. Registration's "email already in use" is intentionally *not*
   enumeration-resistant — see `docs/THREAT-MODEL.md` for why that's a
   deliberate, different, lower-stakes case.
-- The master-password change flow is atomic server-side (new auth hash and
-  re-encrypted vault commit together or not at all) and was specifically
-  audited for ways a network failure could leave a user stranded
-  mid-change — see `CHANGELOG.md`.
+- The master-password change flow is a single atomic `UPDATE` (new auth hash
+  and re-wrapped DEK together or not at all) and was specifically audited
+  for ways a network failure could leave a user stranded mid-change — see
+  `CHANGELOG.md`. It never touches the vault's ciphertext at all — only how
+  its encryption key (the DEK) is wrapped changes.
+- Password-reset tokens are 256-bit random values; only their SHA-256 hash
+  is ever stored, never the raw token (the same reasoning as never storing a
+  raw password). A token is single-use, claimed atomically (so two
+  concurrent uses of the same link can't both succeed), and expires after an
+  hour. `password_reset_request.php` always returns the same generic
+  message regardless of whether the account exists, and is rate-limited by
+  both IP and per-account email hash to resist being used to email-bomb
+  someone else's inbox.
+- The recovery-key wrap key is derived via HKDF from 160 bits of real random
+  entropy generated in the browser — it's shown to you exactly once and
+  never transmitted or stored anywhere in raw form; the server only ever
+  sees the opaque wrapped DEK it produces.
 
 **What's explicitly not protected, or not yet built:**
 
@@ -132,6 +165,21 @@ what it found.
 - **A compromised or malicious client device** (keylogger, malicious
   extension, malware with clipboard access) can observe your master
   password or decrypted vault contents regardless of anything server-side.
+- **Your recovery key is a bearer secret with the same reach as your master
+  password.** Anyone who obtains it can unwrap your vault's DEK and decrypt
+  everything in it, without ever knowing your password. It must be stored
+  as carefully as the password itself — that's why it's shown exactly once
+  and never stored anywhere, in any form, by this project.
+- **Anyone with access to your inbox can trigger a destructive reset** of
+  your vault (or a data-preserving one, if they also have your recovery
+  key). This is inherent to any email-based reset flow — it does not, by
+  itself, expose your existing vault's contents without the recovery key,
+  but it can wipe them. Protect the mailbox tied to your account
+  accordingly.
+- **Reset emails depend on the host's outbound mail being deliverable and
+  not spoofable.** This project uses PHP's native `mail()` with no
+  dependencies; see `docs/DEPLOYMENT.md` for the SPF/DKIM configuration
+  recommended to make delivery reliable and reduce spoofing risk.
 - **Metadata is not hidden.** The server sees your email, login times,
   approximate vault size, and IP address (hashed at rest for rate
   limiting, but visible in transit and in ordinary web server access logs
@@ -154,6 +202,10 @@ what it found.
   refuses to hash or verify anything and fails loudly (500) if
   `PASSWORD_ARGON2ID` isn't available, rather than silently falling back to
   something weaker. Check this before deploying (see setup below).
+- A working outbound `mail()` on the host, for password-reset emails
+  (`noreply@yourdomain` or similar). No SMTP library or Composer dependency
+  is used — see `docs/DEPLOYMENT.md` for the SPF/DKIM setup recommended so
+  those emails actually land in an inbox instead of spam or nowhere.
 - MySQL 5.7+/MariaDB 10.3+ (InnoDB)
 - LiteSpeed or any web server that honors `.htaccess`, with TLS (Let's
   Encrypt via DirectAdmin or equivalent) — several security properties
@@ -203,6 +255,15 @@ full below.
      cookies to be set; `Secure` cookies require HTTPS, so don't deploy to
      production with this set to `'development'`). Use `'development'`
      only for a local machine running over plain HTTP.
+   - `app_url` — the canonical HTTPS origin the app is served from (e.g.
+     `https://vault.example.com`). Used only to build password-reset links
+     server-side — deliberately not derived from the request's `Host`
+     header, which is client-supplied.
+   - `mail.from_address` / `mail.from_name` — the sender address/name for
+     reset emails. The mailbox should exist and accept mail, even though
+     it's send-only.
+   - `password_reset.expiry_minutes` — how long a reset link stays valid
+     (default 10). Kept short deliberately — see `docs/THREAT-MODEL.md`.
    - `fake_kdf_params` — leave as-is unless you change what the frontend
      sends at registration; see the file's comments.
 
@@ -266,7 +327,11 @@ request needs the CSRF header described below, except `register` and
 | `/api/logout.php` | POST | Session | **Yes** | No | End the session. |
 | `/api/vault.php` | GET | Session | No (safe method) | No | Fetch the encrypted vault blob + its current revision. |
 | `/api/vault.php` | PUT | Session | **Yes** | No | Replace the vault blob — see optimistic concurrency below. |
-| `/api/change_password.php` | PUT | Session | **Yes** | Yes (`change_password`, by account+IP) | Atomically replace the auth hash, KDF salt/params, and vault blob together. |
+| `/api/change_password.php` | PUT | Session | **Yes** | Yes (`change_password`, by account only — no IP, see `CHANGELOG.md`) | Replace the auth hash, KDF salt/params, and wrapped DEK in one atomic `UPDATE`. Never touches the vault ciphertext. |
+| `/api/recovery_key.php` | PUT | Session | **Yes** | Yes (shares `change_password`'s bucket) | Set up or rotate the recovery-key wrap of the vault's DEK. Requires re-proving the current password. |
+| `/api/password_reset_request.php` | POST | — | No | Yes (`password_reset_request`, by IP *and* by account) | Request a reset link by email. Always returns the same generic message. |
+| `/api/password_reset_verify.php` | GET | — | No | Yes (`password_reset_verify`, by IP) | Check a reset token is valid without consuming it; returns whether a recovery-key wrap exists for this account. |
+| `/api/password_reset_confirm.php` | POST | — | No | Yes (`password_reset_confirm`, by IP) | Consume a reset token and apply either a recovery-key reset (vault preserved) or a destructive reset (fresh empty vault). Establishes a new session on success. |
 
 **Auth & session.** A successful `register`/`login` sets an HttpOnly,
 `SameSite=Strict` session cookie (`Secure` when `app_env` is
@@ -287,12 +352,19 @@ own vault write, as part of the same atomic operation as the auth-hash
 update (see below) — a stale vault read blocks the whole password change,
 not just the vault half of it.
 
-**Atomicity of `change_password.php`.** The new auth hash (new KDF salt +
-params + hashed auth value) and the newly re-encrypted vault blob are
-written in a single database transaction. If the vault's optimistic-
-concurrency check fails, the *entire* transaction rolls back — the auth
-hash is not updated either. There is no state where the password changed
-but the vault didn't (or vice versa).
+**`change_password.php` never touches the vault.** The vault's DEK doesn't
+change on a password change — only how it's wrapped. A single `UPDATE` on
+`users` (new auth hash, new KDF salt/params, new wrapped DEK) is atomic by
+nature; there's no cross-table transaction or optimistic-concurrency dance
+needed here anymore (there used to be, before the DEK/envelope model — see
+`CHANGELOG.md`).
+
+**Password reset.** `password_reset_confirm.php` claims its token
+atomically first (so a retried or double-submitted request can't apply the
+change twice), then either re-wraps the existing DEK under a new password
+(`mode: "recovery"`, vault untouched) or generates a fresh DEK and empty
+vault (`mode: "destructive"`) in one transaction. Either way it establishes
+a fresh session on success, the same as `login.php`.
 
 **Enumeration.** Login failures (`login.php`) return the identical
 `"Invalid email or password."` message and roughly the same response time

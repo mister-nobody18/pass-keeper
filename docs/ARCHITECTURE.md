@@ -6,7 +6,9 @@ implementation (native PHP sessions instead of a custom `sessions` table —
 see the callout in §3). `frontend/` now performs all cryptography client-side
 and talks to `backend-php/`'s endpoints — see §5 for the full client crypto
 flow, exact parameters, measured timings, and a diagram of what actually
-crosses the network. The Node prototype (`backend/`) is not yet
+crosses the network. §6 documents the envelope-encryption (DEK) model that
+underlies the master-password reset feature, and what crosses the network
+for that flow specifically. The Node prototype (`backend/`) is not yet
 decommissioned; see `README.md` "Project status."
 
 This document is the detailed companion to the summary in `README.md`. It covers
@@ -169,6 +171,16 @@ see §3 for the explicit scale ceiling.
 > (with two small refinements: `kdf_salt`/`kdf_params` are `VARCHAR`, not
 > `VARBINARY`, since the browser is free to encode them however it likes —
 > the server only ever stores and returns them verbatim).
+>
+> **Second deviation, added with the password-reset feature (§6):** `users`
+> gained `wrapped_dek_password`, `wrapped_dek_recovery` (nullable), and
+> `recovery_key_created_at` (nullable) — the opaque, wrapped copies of the
+> vault's DEK, never key material the server could act on. A new
+> `password_resets` table was added, matching the shape sketched for the
+> original `sessions` table's `token_hash` column (hash, not raw token; see
+> §6). See `backend-php/schema.sql` for the exact, current DDL — it is the
+> source of truth; the excerpt below is illustrative of the original design
+> and does not repeat every column added since.
 
 ```sql
 CREATE TABLE users (
@@ -419,27 +431,50 @@ to hand-roll what the platform already provides correctly).
                     │        │                                     │
                     │        └─ deriveBits(info="pass-keeper-enc-v1")│
                     │              └─▶ importKey('raw', ..., 'AES-GCM',│
-                    │                    extractable: false)        │
-                    │                    └─▶ encryptionKey (CryptoKey)│
+                    │                    extractable: false,        │
+                    │                    usages: wrapKey/unwrapKey) │
+                    │                    └─▶ passwordWrapKey (CryptoKey)│
                     └─────────────────────────────────────────────┘
                                  │ postMessage (structured clone)
                                  ▼
                     Main thread (crypto/kdfClient.js)
                          │                    │
-                         │ authHash           │ encryptionKey (CryptoKey,
-                         ▼                    │  non-extractable)
+                         │ authHash           │ passwordWrapKey (CryptoKey,
+                         ▼                    │  non-extractable, wrapKey/unwrapKey only)
                   sent to server              ▼
-                  (proves identity)    crypto/vaultKeyStore.js
+                  (proves identity)    crypto/dek.js
+                                        unwrapDek(wrappedDekPassword, passwordWrapKey)
+                                        → DEK (CryptoKey, non-extractable,
+                                          the SAME key regardless of which
+                                          wrap unlocked it - see §6)
+                                               │
+                                               ▼
+                                        crypto/vaultKeyStore.js
                                         (module-level variable only;
                                          never persisted anywhere)
                                                │
                                                ▼
                                  crypto/vaultCipher.js
-                                 encryptVault(entries, encryptionKey):
+                                 encryptVault(entries, DEK):
                                    iv = crypto.getRandomValues(12 bytes)  ← fresh every call
-                                   ciphertext = subtle.encrypt('AES-GCM', {iv}, key, JSON(entries))
+                                   ciphertext = subtle.encrypt('AES-GCM', {iv}, DEK, JSON(entries))
                                    → {"v":1,"iv":"<b64>","data":"<b64>"}  ← this string is what's sent/stored
 ```
+
+**This is an envelope-encryption model, not a direct one** — as of the
+master-password-reset feature (see §6), the key derived above no longer
+encrypts the vault directly. It only wraps (via native `crypto.subtle.
+wrapKey()`/`unwrapKey()`) a separate, random Data Encryption Key (the DEK),
+which is what actually encrypts the vault. This indirection is what makes a
+password reset possible without losing data: the *same* DEK can be wrapped
+under more than one independently-derived key (the password, and optionally
+a recovery key), so unwrapping it via either one yields an identical vault
+key, and the vault ciphertext itself never has to move or be re-encrypted
+when only *how* the DEK is protected changes. Before this feature, the
+derived key encrypted the vault directly — the box above showing
+`encryptionKey`/`passwordWrapKey` naming reflects that the same derivation
+pipeline now produces a *wrapping* key rather than an *encrypting* one; see
+§6 for the full reasoning and the reset flow itself.
 
 **Why a Web Worker, specifically.** Argon2id at these parameters takes
 roughly a second on real hardware (see "Parameters and measured timings"
@@ -506,16 +541,26 @@ mass re-key, no breakage.
 
 ### Key custody: where the encryption key lives, and doesn't
 
+This describes the vault's actual encryption key — the DEK (§6) — which is
+what ends up in `vaultKeyStore.js`. The password- and recovery-derived
+*wrapping* keys that unlock it are shorter-lived: held only for the single
+`wrapKey`/`unwrapKey` call that needs them, then left to be garbage
+collected, never placed in `vaultKeyStore.js` themselves.
+
 - **Never** `localStorage`, `sessionStorage`, `IndexedDB`, or a cookie —
   nothing that survives past the JS runtime of this exact tab.
 - **Only** a module-level variable in `crypto/vaultKeyStore.js`, deliberately
   outside React state or context (React DevTools can inspect component
   state/context values; a secret living there would be visible to anyone
   with devtools access, which a plain module closure isn't).
-- **Non-extractable by construction.** The `CryptoKey` is imported with
-  `extractable: false` — even code holding a direct reference to it cannot
-  call `exportKey()` and recover raw bytes; it can only be handed to
-  `encrypt`/`decrypt`.
+- **Non-extractable by construction, in normal use.** `unwrapDek()`
+  (`crypto/dek.js`) always produces the DEK with `extractable: false` — even
+  code holding a direct reference to it cannot call `exportKey()` and
+  recover raw bytes; it can only be handed to `encrypt`/`decrypt`. The one
+  narrow exception is `unwrapDekForRewrap()`, used only by the
+  change-password and recovery-key-rotation flows, which need an
+  `extractable: true` copy transiently because WebCrypto's `wrapKey()`
+  requires it of its source key — see §6.
 - **Wiped** on: `lock()` (idle timeout or manual "Lock vault now"),
   `logout()`, and tab close/hide (`pagehide`/`beforeunload` listeners in
   `vaultKeyStore.js`). It is *also*, unavoidably, wiped by any page
@@ -556,12 +601,21 @@ mass re-key, no breakage.
                                   params - or a deterministic fake pair for
                                   a nonexistent email, see THREAT-MODEL.md)
 
-  vault ciphertext ─────────▶  PUT /vault.php, /change_password.php
+  vault ciphertext ─────────▶  PUT /vault.php, /register.php,
+                                 /password_reset_confirm.php (destructive mode)
                                  ({"v":1,"iv":"...","data":"..."} - the
                                   server stores this string opaquely and
                                   never parses it)
                     ◀───────────  GET /vault.php
                                  (same opaque string, handed back verbatim)
+
+  wrapped DEK ───────────────▶  POST /register.php, PUT /change_password.php,
+  (password- and/or             PUT /recovery_key.php, POST /password_reset_confirm.php
+  recovery-wrapped,              ({"v":1,"iv":"...","data":"..."} - same opaque
+  each independently             envelope shape as vault ciphertext, but wrapping
+  {"v":1,"iv":...,"data":...})   32 raw bytes instead of JSON - see §6)
+                    ◀───────────  GET /login.php, GET /me.php,
+                                 GET /password_reset_verify.php (recovery wrap only)
 
   session cookie ◀──▶            HttpOnly, Secure (prod), SameSite=Strict -
                                  proves *who*, carries no key material
@@ -631,6 +685,166 @@ frontend/src/crypto/
 ├── base64.js          ArrayBuffer/Uint8Array <-> base64 (encoding, not a crypto primitive)
 ├── kdfWorker.js        Runs INSIDE the Web Worker: Argon2id + HKDF + AES-GCM key import
 ├── kdfClient.js         Main-thread interface to the worker; DEFAULT_KDF_PARAMS lives here
+├── dek.js               Generates/wraps/unwraps the vault's DEK - see §6
+├── recoveryKey.js        Generates/parses the recovery key, derives its wrap key - see §6
 ├── vaultCipher.js       AES-256-GCM encrypt/decrypt of the whole vault blob (main thread - fast)
-└── vaultKeyStore.js     The one place the encryption key is held; never persisted
+└── vaultKeyStore.js     The one place the vault's DEK is held; never persisted
 ```
+
+---
+
+## 6. Envelope encryption and the password-reset flow
+
+**Status: implemented.** This section documents the DEK/envelope model
+introduced for master-password reset — how it's a strict superset of §5's
+model (nothing about Argon2id, HKDF, or AES-GCM parameters changed; only
+what the derived key is *used for* did), and exactly what the reset flow
+sends over the network.
+
+### Why an envelope, not a direct key
+
+Before this feature, `encryptionKey` (§5) encrypted the vault directly. That
+makes recovery structurally impossible: nothing but the master password
+could ever produce that exact key again, so a lost password meant a lost
+vault, full stop — the honest state the original README warning described.
+
+A recovery key can't retroactively unlock something it was never involved
+in wrapping. The fix is one level of indirection: introduce a random Data
+Encryption Key (the DEK) that actually encrypts the vault, and wrap
+(encrypt) *that* under one or more independently-derived keys — one from
+the master password, optionally a second from a recovery key. Either one
+alone unwraps the identical DEK, so either one alone can decrypt the vault.
+Nothing about vault confidentiality against a stolen database changes: an
+attacker still needs to either guess the master password or possess the
+recovery key and run the same derivation the browser does.
+
+```
+DEK = crypto.subtle.generateKey(AES-GCM-256, extractable: true)   ← extractable is required
+                                                                       transiently: wrapKey()
+                                                                       needs it of its source key
+passwordWrapKey = HKDF(Argon2id(password, kdfSalt))    ← identical derivation to §5, just
+                                                            used to wrap now, not encrypt directly
+wrappedDekPassword = crypto.subtle.wrapKey('raw', DEK, passwordWrapKey, AES-GCM)
+
+recoveryKey = crypto.getRandomValues(20 bytes) → Base32, "XXXX-XXXX-...-XXXX" (8 groups)
+recoveryWrapKey = HKDF(recoveryKey bytes, info="pass-keeper-recovery-wrap-v1")  ← fast HKDF,
+                                                                                    no Argon2id: the
+                                                                                    recovery key is
+                                                                                    already 160 bits
+                                                                                    of real entropy,
+                                                                                    not a guessable
+                                                                                    password
+wrappedDekRecovery = crypto.subtle.wrapKey('raw', DEK, recoveryWrapKey, AES-GCM)
+
+workingDek = crypto.subtle.unwrapKey(wrappedDekPassword, passwordWrapKey, extractable: false)
+vaultCiphertext = AES-256-GCM-encrypt(entries, workingDek)   ← unchanged from §5, just keyed
+                                                                  by workingDek instead of
+                                                                  encryptionKey directly
+```
+
+Both `wrappedDekPassword` and `wrappedDekRecovery` use the same `{v, iv,
+data}` JSON envelope shape `vaultCipher.js` already uses for the vault
+itself (`crypto/dek.js`) — the only difference is what's inside: 32 raw DEK
+bytes instead of a JSON-serialized entries array.
+
+### Why WebCrypto's `wrapKey()`/`unwrapKey()`, not manual export-then-encrypt
+
+`crypto.subtle.wrapKey()`/`unwrapKey()` are used instead of exporting the
+DEK's raw bytes and running them through `encrypt()`/`decrypt()` by hand,
+even though the two are cryptographically equivalent for AES-GCM. The
+reason is custody, not correctness: `wrapKey()` internally exports and
+encrypts a key without ever returning the raw bytes to JS-visible memory,
+and `unwrapKey()` internally decrypts and imports without the plaintext key
+ever existing as a JS-readable value either — only the finished `CryptoKey`
+object comes back. A hand-rolled export-then-encrypt would necessarily hold
+the DEK's raw 32 bytes in an ordinary, GC-visible `Uint8Array` at some point;
+`wrapKey`/`unwrapKey` never do.
+
+**A real constraint this surfaced, worth recording:** `wrapKey()` throws
+`InvalidAccessError` on a non-extractable source key — wrapping fundamentally
+requires the browser to access the key's raw bytes internally before
+encrypting them. This means `generateDek()` must produce an `extractable:
+true` key, which looks like it contradicts the non-extractable-by-default
+posture in §5. The resolution: that extractable reference is used *only* to
+call `wrapDek()` one or more times and is then discarded; every caller
+immediately obtains its real *working* copy of the DEK by unwrapping one of
+those envelopes again via `unwrapDek()`, which always returns
+`extractable: false`. The one deliberate exception is
+`unwrapDekForRewrap()`, used only by change-password and recovery-key
+rotation (which need to re-wrap the *same* DEK under a *different* key, and
+so need one more transiently-extractable copy) — see the file-level
+comments in `crypto/dek.js` for the exact reasoning and call sites.
+
+### The reset flow itself
+
+```
+Forgot password (frontend/src/pages/ForgotPassword.jsx)
+  email ──POST /password_reset_request.php──▶ server
+    server: looks up account (silently, no enumeration - always the same
+      response either way), generates a 256-bit random token, stores only
+      its SHA-256 hash + an expiry (backend-php/lib/password_reset.php),
+      emails a link containing the RAW token (PHP's native mail(), zero
+      dependencies - backend-php/lib/mailer.php)
+
+Reset link clicked (frontend/src/pages/ResetPassword.jsx)
+  token (from URL) ──GET /password_reset_verify.php?token=...──▶ server
+    server: hashes the token, looks it up WITHOUT consuming it (so reloading
+      this page doesn't burn the link), returns {valid, email,
+      wrappedDekRecovery (nullable)}
+  ◀── if wrappedDekRecovery is present, the recovery-key path is offered;
+      the destructive ("start fresh") path is always offered as a fallback
+
+Recovery-key path (vault preserved):
+  recoveryKey (typed by user) ──parseRecoveryKey()──▶ raw bytes
+    ──deriveRecoveryWrapKey()──▶ recoveryWrapKey
+    ──unwrapDekForRewrap(wrappedDekRecovery, recoveryWrapKey)──▶ the SAME DEK
+      (a wrong recovery key fails cleanly here, client-side, as a
+       DekUnwrapError - never reaches the server)
+  newPassword ──Argon2id/HKDF (fresh salt, current DEFAULT_KDF_PARAMS)──▶ newAuthHash, newPasswordWrapKey
+  wrapDek(theSameDek, newPasswordWrapKey) ──▶ newWrappedDekPassword
+  {token, newAuthHash, newKdfSalt, newKdfParams, newWrappedDekPassword,
+   mode:"recovery"} ──POST /password_reset_confirm.php──▶ server
+    server: atomically claims the token (single-use), then ONE UPDATE on
+      users (auth_hash, kdf_salt, kdf_params, wrapped_dek_password) -
+      vaults is never touched. Establishes a fresh session, same as login.
+
+Destructive path (vault NOT preserved - explicit, checkbox-gated in the UI):
+  DEK' = generateDek()  ← a brand-new DEK, unrelated to the old one
+  newPassword ──▶ newPasswordWrapKey ──▶ wrappedDekPassword' = wrapDek(DEK', newPasswordWrapKey)
+  a NEW recovery key is generated and offered immediately (shown once, same
+    RecoveryKeyDisplay component as registration) so the user isn't left
+    without one again
+  emptyVault ──AES-256-GCM(DEK')──▶ newVaultCiphertext
+  {token, ..., mode:"destructive", newWrappedDekRecovery, newVaultCiphertext}
+    ──POST /password_reset_confirm.php──▶ server
+    server: claims the token, then in one transaction UPDATEs users AND
+      REPLACES vaults.ciphertext outright (no CAS guard needed - there is
+      nothing left to preserve). The old ciphertext is not retained anywhere;
+      this is the documented, deliberate cost of resetting without the
+      recovery key.
+```
+
+### Token handling
+
+`password_resets.token_hash` stores only the SHA-256 hash of the 256-bit
+random token — the raw token exists only in the emailed link and briefly in
+the browser's URL bar, the same reasoning as never storing a raw password or
+a raw session identifier. Consumption is a single atomic `UPDATE ... WHERE
+token_hash = ? AND used_at IS NULL AND expires_at > NOW()`, checked via
+`rowCount()` (`pk_consume_reset_token()`, `backend-php/lib/password_reset.php`)
+— the same compare-and-swap shape §3's `vaults.revision` guard uses — so two
+concurrent submissions of the same link (a double-click, a retried request)
+can't both succeed. Requesting a new link invalidates any prior unused one
+for that account first, so only one reset link is ever live at a time.
+
+### `change_password.php`'s simplification
+
+A direct consequence of the envelope model: changing your master password
+no longer touches the vault at all. §1 originally described
+`change_password.php` as re-encrypting the whole vault inside a transaction
+with the same optimistic-concurrency guard as `PUT /vault.php`. Under the
+DEK model, a password change only re-wraps the DEK — the vault ciphertext
+never moves — so the endpoint shrank to a single `UPDATE users` statement,
+atomic by nature, with no transaction or revision check needed at all. See
+`CHANGELOG.md` for this specific change and the README's API reference table
+for the endpoint as it exists now.

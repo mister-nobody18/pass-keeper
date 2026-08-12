@@ -3,6 +3,8 @@ import { api } from '../api/client';
 import { useToast } from './ToastContext.jsx';
 import { deriveKeys, generateKdfSalt, DEFAULT_KDF_PARAMS } from '../crypto/kdfClient.js';
 import { encryptVault } from '../crypto/vaultCipher.js';
+import { generateDek, wrapDek, unwrapDek } from '../crypto/dek.js';
+import { generateRecoveryKey, deriveRecoveryWrapKey } from '../crypto/recoveryKey.js';
 import { setVaultKey, clearVaultKey } from '../crypto/vaultKeyStore.js';
 
 const AuthContext = createContext(null);
@@ -51,25 +53,60 @@ export function AuthProvider({ children }) {
     const login = useCallback(async (email, password, onPhase) => {
         onPhase?.('deriving');
         const { kdfSalt, kdfParams } = await api.getLoginSalt(email);
-        const { authHash, encryptionKey } = await deriveKeys(password, kdfSalt, JSON.parse(kdfParams));
+        const { authHash, encryptionKey: passwordWrapKey } = await deriveKeys(password, kdfSalt, JSON.parse(kdfParams));
 
         onPhase?.('verifying');
         const data = await api.login({ email, authHash });
 
-        setVaultKey(encryptionKey);
+        // The auth hash already proved the password is correct (the server
+        // checked it before returning wrappedDekPassword), so this unwrap
+        // should always succeed - passwordWrapKey is derived from the exact
+        // same password+salt+params that wrapped it in the first place.
+        const dek = await unwrapDek(data.wrappedDekPassword, passwordWrapKey);
+
+        setVaultKey(dek);
         setUser(data.user);
     }, []);
 
     /**
+     * Deliberately does NOT call setUser() itself. Register.jsx shows the
+     * recovery key exactly once before the user can navigate anywhere else -
+     * if this set the `user` state directly, PublicOnlyRoute (which /register
+     * is wrapped in) would redirect to "/" the instant that state changed,
+     * racing ahead of and unmounting the recovery-key screen before it could
+     * even render. The caller finalizes login by calling setUser itself
+     * (exposed on this context) once the user has acknowledged the key.
+     *
      * @param {string} email
      * @param {string} password
-     * @param {(phase: 'deriving' | 'creating') => void} [onPhase]
+     * @param {{ onPhase?: (phase: 'deriving' | 'creating') => void, includeRecoveryKey?: boolean }} [options]
+     * @returns {Promise<{ recoveryKey: string | null, user: object, dek: CryptoKey }>}
      */
-    const register = useCallback(async (email, password, onPhase) => {
+    const register = useCallback(async (email, password, { onPhase, includeRecoveryKey = true } = {}) => {
         onPhase?.('deriving');
         const kdfSalt = generateKdfSalt();
-        const { authHash, encryptionKey } = await deriveKeys(password, kdfSalt, DEFAULT_KDF_PARAMS);
-        const vaultCiphertext = await encryptVault([], encryptionKey);
+        const { authHash, encryptionKey: passwordWrapKey } = await deriveKeys(password, kdfSalt, DEFAULT_KDF_PARAMS);
+
+        // Generate the vault's DEK once, wrap it under the password (always)
+        // and optionally under a fresh recovery key too - see
+        // crypto/dek.js: wrapKey() needs an extractable source key, which
+        // generateDek() provides; the working copy we actually use going
+        // forward is obtained by unwrapping again further down, which is
+        // always non-extractable.
+        const extractableDek = await generateDek();
+        const wrappedDekPassword = await wrapDek(extractableDek, passwordWrapKey);
+
+        let wrappedDekRecovery = null;
+        let recoveryKey = null;
+        if (includeRecoveryKey) {
+            const { raw, formatted } = generateRecoveryKey();
+            const recoveryWrapKey = await deriveRecoveryWrapKey(raw);
+            wrappedDekRecovery = await wrapDek(extractableDek, recoveryWrapKey);
+            recoveryKey = formatted;
+        }
+
+        const dek = await unwrapDek(wrappedDekPassword, passwordWrapKey);
+        const vaultCiphertext = await encryptVault([], dek);
 
         onPhase?.('creating');
         const data = await api.register({
@@ -77,11 +114,12 @@ export function AuthProvider({ children }) {
             authHash,
             kdfSalt,
             kdfParams: JSON.stringify(DEFAULT_KDF_PARAMS),
+            wrappedDekPassword,
+            wrappedDekRecovery,
             vaultCiphertext,
         });
 
-        setVaultKey(encryptionKey);
-        setUser(data.user);
+        return { recoveryKey, user: data.user, dek };
     }, []);
 
     const logout = useCallback(async () => {

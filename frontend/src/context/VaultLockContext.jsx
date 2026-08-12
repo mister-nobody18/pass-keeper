@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAuth } from './AuthContext.jsx';
 import { api } from '../api/client.js';
 import { deriveKeys } from '../crypto/kdfClient.js';
+import { unwrapDek } from '../crypto/dek.js';
 import { setVaultKey, clearVaultKey, hasVaultKey } from '../crypto/vaultKeyStore.js';
 
 // Client-side idle lock: independent of the server session's own TTL, which
@@ -57,12 +58,13 @@ export function VaultLockProvider({ children }) {
         async (password, onPhase) => {
             onPhase?.('deriving');
             const { kdfSalt, kdfParams } = await api.getLoginSalt(user.email);
-            const { authHash, encryptionKey } = await deriveKeys(password, kdfSalt, JSON.parse(kdfParams));
+            const { authHash, encryptionKey: passwordWrapKey } = await deriveKeys(password, kdfSalt, JSON.parse(kdfParams));
 
             onPhase?.('verifying');
-            await api.login({ email: user.email, authHash });
+            const data = await api.login({ email: user.email, authHash });
+            const dek = await unwrapDek(data.wrappedDekPassword, passwordWrapKey);
 
-            setVaultKey(encryptionKey);
+            setVaultKey(dek);
             setLocked(false);
             extend();
         },

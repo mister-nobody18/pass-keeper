@@ -24,7 +24,7 @@ if (!pk_valid_email($email) || !pk_valid_string($authHash, 16, 512)) {
 // across many IPs can't bypass the IP-based limit for one target account.
 pk_rate_limit_endpoint($db, $pkConfig, 'login', 'email:' . hash('sha256', $email));
 
-$stmt = $db->prepare('SELECT id, email, auth_hash FROM users WHERE email = :email');
+$stmt = $db->prepare('SELECT id, email, auth_hash, wrapped_dek_password, recovery_key_created_at FROM users WHERE email = :email');
 $stmt->execute(['email' => $email]);
 $user = $stmt->fetch();
 
@@ -43,4 +43,11 @@ if (!pk_verify_auth_value($authHash, $pkConfig['pepper'], $user['auth_hash'])) {
 pk_login_session((int) $user['id'], $user['email']);
 pk_issue_csrf_cookie($pkConfig);
 
-pk_json_response(['user' => ['id' => (int) $user['id'], 'email' => $user['email']]]);
+pk_json_response([
+    'user'               => [
+        'id' => (int) $user['id'],
+        'email' => $user['email'],
+        'recoveryKeyCreatedAt' => $user['recovery_key_created_at'],
+    ],
+    'wrappedDekPassword' => $user['wrapped_dek_password'],
+]);

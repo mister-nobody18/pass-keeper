@@ -38,20 +38,28 @@ backend-php/
 │       ├── login.php
 │       ├── logout.php
 │       ├── vault.php          GET + PUT (same resource, two methods, one file)
-│       └── change_password.php
+│       ├── change_password.php
+│       ├── recovery_key.php   PUT - set up/rotate the recovery-key wrap of the vault's DEK
+│       ├── password_reset_request.php   POST - email a reset link, always the same response
+│       ├── password_reset_verify.php    GET  - check a token without consuming it
+│       └── password_reset_confirm.php   POST - consume a token, apply a recovery or destructive reset
 └── schema.sql                 Run once against a fresh MySQL database — see README.md setup steps
 
 frontend/src/
-├── crypto/                   All cryptography lives here - see docs/ARCHITECTURE.md §5 and this
+├── crypto/                   All cryptography lives here - see docs/ARCHITECTURE.md §5-6 and this
 │   │                          file's "Crypto parameters and primitives" section below
 │   ├── base64.js               plain encoding helpers, not a crypto primitive
 │   ├── kdfWorker.js             runs Argon2id + HKDF + AES-GCM key import INSIDE a Web Worker
 │   ├── kdfClient.js              main-thread worker interface; DEFAULT_KDF_PARAMS lives here
-│   ├── vaultCipher.js            AES-256-GCM encrypt/decrypt of the whole vault blob
-│   └── vaultKeyStore.js          the one place the encryption key is held; never persisted
+│   ├── dek.js                    generates/wraps/unwraps the vault's DEK - see ARCHITECTURE.md §6
+│   ├── recoveryKey.js             generates/parses the recovery key, derives its wrap key
+│   ├── vaultCipher.js            AES-256-GCM encrypt/decrypt of the whole vault blob, keyed by the DEK
+│   └── vaultKeyStore.js          the one place the vault's DEK is held; never persisted
 ├── api/client.js              talks to backend-php's endpoints (not backend/'s)
 ├── context/AuthContext.jsx     register/login/logout, wires the crypto pipeline to api/client.js
 ├── context/VaultLockContext.jsx  idle-lock + unlock, same crypto pipeline as AuthContext's login
+├── pages/ForgotPassword.jsx, pages/ResetPassword.jsx   the reset flow's two screens
+├── components/RecoveryKeyDisplay.jsx   shown once after a recovery key is generated - never persists it
 └── components/ui/*, pages/*    unchanged design system - see the earlier redesign work
 ```
 
@@ -303,17 +311,53 @@ key; changing either string changes every future derivation's output for
 every account, silently locking everyone out (the auth hash won't match, and
 even if it somehow did, the encryption key would be wrong too).
 
-**Do not make the AES-GCM `encryptionKey` extractable.** It's imported with
-`extractable: false` (`crypto/kdfWorker.js`) specifically so that no code
+**Do not make the AES-GCM password/recovery wrap keys extractable.** The
+derived key from `crypto/kdfWorker.js` (used to wrap/unwrap the DEK — see
+below) and `crypto/recoveryKey.js`'s `deriveRecoveryWrapKey()` are both
+imported/derived with `extractable: false` specifically so that no code
 path — not a bug, not a future dependency, not an XSS payload that gets a
 reference to the key object — can call `exportKey()` and recover raw key
-bytes. There is no legitimate reason for this app to ever export it; if a
-future change seems to need to, that's a sign the design changed in a way
-that needs review, not a reason to flip the flag.
+bytes. There is no legitimate reason for this app to ever export either;
+if a future change seems to need to, that's a sign the design changed in a
+way that needs review, not a reason to flip the flag.
 
-**Do not persist the encryption key anywhere** — `localStorage`,
+**Do not persist the vault's DEK anywhere** — `localStorage`,
 `sessionStorage`, `IndexedDB`, a cookie, a global `window.*` property, React
 state/context, or a server round-trip "just for convenience." It lives in
 exactly one place: the module-level variable in `crypto/vaultKeyStore.js`.
 If a feature seems to require persisting it, the feature needs to change,
 not this rule.
+
+**The DEK/envelope model (`crypto/dek.js`, `crypto/recoveryKey.js`) — see
+`docs/ARCHITECTURE.md` §6 for the full design.** As of the master-password
+reset feature, the key derived from the password (and, if set up, from a
+recovery key) no longer encrypts the vault directly — it *wraps* a
+separate, random Data Encryption Key (the DEK), which does the actual
+vault encryption. A few rules specific to this indirection:
+
+- **Always use `crypto.subtle.wrapKey()`/`unwrapKey()` for the DEK — never
+  export it to raw bytes and run it through `encrypt()`/`decrypt()` by
+  hand.** `wrapKey`/`unwrapKey` never surface the DEK's raw bytes to
+  JS-visible memory at any point; a hand-rolled export-then-encrypt
+  necessarily would. See `crypto/dek.js`'s file-level comment for why this
+  matters and the `InvalidAccessError` constraint it's built around
+  (`wrapKey()` requires an `extractable: true` *source* key — this is why
+  `generateDek()` produces one, and why every normal caller immediately
+  re-unwraps via `unwrapDek()`, which always returns `extractable: false`).
+- **`unwrapDekForRewrap()` exists for exactly one purpose** — obtaining a
+  transiently-`extractable: true` copy of the DEK so it can be re-wrapped
+  under a *different* key (change-password, recovery-key setup/rotation).
+  Do not use it anywhere that just needs to *use* the DEK to encrypt/decrypt
+  the vault; use `unwrapDek()` for that.
+- **Do not reduce the recovery key's entropy** (`RECOVERY_KEY_BYTES = 20` /
+  160 bits, `crypto/recoveryKey.js`) without review. Unlike the master
+  password, this value is never chosen or memorized by a human — it's fully
+  random and has no dictionary to attack — so it deliberately uses fast HKDF
+  rather than Argon2id to derive its wrap key. That's only safe *because*
+  the entropy is high; shrinking it without also reconsidering the KDF
+  choice would quietly weaken the whole recovery path.
+- **Do not change the recovery-wrap HKDF `info` string**
+  (`"pass-keeper-recovery-wrap-v1"`) for the same reason as the KDF `info`
+  strings above — it's part of what makes this derivation's output
+  independent and stable; changing it breaks every existing recovery key
+  wrap silently.

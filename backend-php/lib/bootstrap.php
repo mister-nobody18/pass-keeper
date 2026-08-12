@@ -19,6 +19,8 @@ require_once __DIR__ . '/csrf.php';
 require_once __DIR__ . '/rate_limit.php';
 require_once __DIR__ . '/crypto_helpers.php';
 require_once __DIR__ . '/validation.php';
+require_once __DIR__ . '/password_reset.php';
+require_once __DIR__ . '/mailer.php';
 
 $pkConfig = pk_config();
 

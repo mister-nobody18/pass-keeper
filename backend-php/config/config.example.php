@@ -15,6 +15,23 @@ return [
     // 'development' only for a local machine running over plain HTTP.
     'app_env' => 'production',
 
+    // The canonical origin this app is served from. Used ONLY to build
+    // password-reset links server-side — deliberately not built from the
+    // request's Host header, which is client-supplied and not something a
+    // security-sensitive email link should be constructed from.
+    'app_url' => 'https://vault.soricu.com',
+
+    'mail' => [
+        'from_address' => 'noreply@soricu.com',
+        'from_name'    => 'Pass Keeper',
+    ],
+
+    'password_reset' => [
+        // How long a reset link stays valid. Kept short deliberately - see
+        // docs/THREAT-MODEL.md.
+        'expiry_minutes' => 10,
+    ],
+
     'db' => [
         'host'    => '127.0.0.1',
         'port'    => '3306',
@@ -46,9 +63,14 @@ return [
     // Fixed-window rate limits, enforced via the rate_limits MySQL table.
     // See docs/ARCHITECTURE.md §3 and lib/rate_limit.php.
     'rate_limits' => [
-        'register'        => ['limit' => 5,  'window_seconds' => 3600],
-        'login'            => ['limit' => 10, 'window_seconds' => 900],
-        'change_password'  => ['limit' => 5,  'window_seconds' => 900],
+        'register'                 => ['limit' => 5,  'window_seconds' => 3600],
+        'login'                     => ['limit' => 10, 'window_seconds' => 900],
+        'change_password'           => ['limit' => 5,  'window_seconds' => 900],
+        // Deliberately tight - an unthrottled reset-request endpoint is a
+        // ready-made way to email-bomb someone else's inbox with reset links.
+        'password_reset_request'    => ['limit' => 3,  'window_seconds' => 3600],
+        'password_reset_verify'     => ['limit' => 20, 'window_seconds' => 3600],
+        'password_reset_confirm'    => ['limit' => 10, 'window_seconds' => 3600],
     ],
 
     // Returned by the login-salt lookup for emails that don't exist, so the

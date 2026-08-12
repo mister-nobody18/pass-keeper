@@ -11,11 +11,13 @@ pk_rate_limit_endpoint($db, $pkConfig, 'register', pk_client_ip());
 
 $body = pk_read_json_body();
 
-$email     = is_string($body['email'] ?? null) ? trim($body['email']) : '';
-$authHash  = $body['authHash'] ?? null;
-$kdfSalt   = $body['kdfSalt'] ?? null;
-$kdfParams = $body['kdfParams'] ?? null;
-$vaultBlob = $body['vaultCiphertext'] ?? null;
+$email                  = is_string($body['email'] ?? null) ? trim($body['email']) : '';
+$authHash               = $body['authHash'] ?? null;
+$kdfSalt                = $body['kdfSalt'] ?? null;
+$kdfParams              = $body['kdfParams'] ?? null;
+$wrappedDekPassword     = $body['wrappedDekPassword'] ?? null;
+$wrappedDekRecovery     = $body['wrappedDekRecovery'] ?? null; // optional - recovery key setup is skippable at registration
+$vaultBlob              = $body['vaultCiphertext'] ?? null;
 
 if (!pk_valid_email($email)) {
     pk_error_response('A valid email is required.', 400);
@@ -28,6 +30,12 @@ if (!pk_valid_string($kdfSalt, 8, 512)) {
 }
 if (!pk_valid_string($kdfParams, 2, 512)) {
     pk_error_response('Valid KDF parameters are required.', 400);
+}
+if (!pk_valid_string($wrappedDekPassword, 1, 5000)) {
+    pk_error_response('A valid wrapped key is required.', 400);
+}
+if ($wrappedDekRecovery !== null && !pk_valid_string($wrappedDekRecovery, 1, 5000)) {
+    pk_error_response('Invalid recovery wrap.', 400);
 }
 if (!pk_valid_string($vaultBlob, 1, 5_000_000)) {
     pk_error_response('A valid initial vault is required.', 400);
@@ -58,14 +66,17 @@ try {
     $db->beginTransaction();
 
     $insertUser = $db->prepare(
-        'INSERT INTO users (email, auth_hash, kdf_salt, kdf_params)
-         VALUES (:email, :auth_hash, :kdf_salt, :kdf_params)'
+        'INSERT INTO users (email, auth_hash, kdf_salt, kdf_params, wrapped_dek_password, wrapped_dek_recovery, recovery_key_created_at)
+         VALUES (:email, :auth_hash, :kdf_salt, :kdf_params, :wrapped_dek_password, :wrapped_dek_recovery, :recovery_key_created_at)'
     );
     $insertUser->execute([
-        'email'      => $email,
-        'auth_hash'  => $storedAuthHash,
-        'kdf_salt'   => $kdfSalt,
-        'kdf_params' => $kdfParams,
+        'email'                   => $email,
+        'auth_hash'               => $storedAuthHash,
+        'kdf_salt'                => $kdfSalt,
+        'kdf_params'              => $kdfParams,
+        'wrapped_dek_password'    => $wrappedDekPassword,
+        'wrapped_dek_recovery'    => $wrappedDekRecovery,
+        'recovery_key_created_at' => $wrappedDekRecovery !== null ? date('Y-m-d H:i:s') : null,
     ]);
     $userId = (int) $db->lastInsertId();
 
@@ -93,4 +104,8 @@ try {
 pk_login_session($userId, $email);
 pk_issue_csrf_cookie($pkConfig);
 
-pk_json_response(['user' => ['id' => $userId, 'email' => $email]], 201);
+pk_json_response(['user' => [
+    'id' => $userId,
+    'email' => $email,
+    'recoveryKeyCreatedAt' => $wrappedDekRecovery !== null ? date('Y-m-d H:i:s') : null,
+]], 201);
