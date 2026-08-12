@@ -2,10 +2,11 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
 import { VaultLockProvider, useVaultLock } from './context/VaultLockContext.jsx';
 import LockScreen from './components/LockScreen.jsx';
-import Login from './pages/Login.jsx';
-import Register from './pages/Register.jsx';
+import Auth from './pages/Auth.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Settings from './pages/Settings.jsx';
+import ForgotPassword from './pages/ForgotPassword.jsx';
+import ResetPassword from './pages/ResetPassword.jsx';
 
 function LockGate({ children }) {
     const { locked } = useVaultLock();
@@ -44,7 +45,7 @@ export default function App() {
                 path="/login"
                 element={
                     <PublicOnlyRoute>
-                        <Login />
+                        <Auth />
                     </PublicOnlyRoute>
                 }
             />
@@ -52,7 +53,23 @@ export default function App() {
                 path="/register"
                 element={
                     <PublicOnlyRoute>
-                        <Register />
+                        <Auth />
+                    </PublicOnlyRoute>
+                }
+            />
+            <Route
+                path="/forgot-password"
+                element={
+                    <PublicOnlyRoute>
+                        <ForgotPassword />
+                    </PublicOnlyRoute>
+                }
+            />
+            <Route
+                path="/reset-password"
+                element={
+                    <PublicOnlyRoute>
+                        <ResetPassword />
                     </PublicOnlyRoute>
                 }
             />

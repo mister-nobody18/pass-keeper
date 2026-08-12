@@ -46,10 +46,16 @@
     --color-text-secondary: 154 163 178;
     --color-text-tertiary: 131 139 160;
 
-    /* Accent — the one interactive/focus colour, used sparingly */
-    --color-accent: 56 199 185;
-    --color-accent-hover: 93 220 206;
-    --color-on-accent: 6 26 24; /* text/icon colour placed on top of an accent-filled surface */
+    /* Accent — the one interactive/focus colour, used sparingly.
+       Mirrors the purple/fuchsia palette introduced on the Auth screen
+       (see pages/Auth.jsx) into the app's single-accent design system -
+       same restrained, one-colour structure as before, new hue. Contrast
+       verified: accent vs surface 7.08:1, vs surface-raised 6.59:1,
+       on-accent text on the accent fill 7.17:1 - all comfortably above
+       WCAG AA's 4.5:1 (text) / 3:1 (UI component) minimums. */
+    --color-accent: 192 132 252; /* purple-400 */
+    --color-accent-hover: 216 180 254; /* purple-300 */
+    --color-on-accent: 24 10 36; /* near-black, purple-tinted; text/icon colour on top of an accent-filled surface */
 
     /* Status colours — always paired with an icon + text label, never colour alone */
     --color-danger: 248 113 113;
