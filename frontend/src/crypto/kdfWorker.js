@@ -66,17 +66,21 @@ async function deriveKeys(password, kdfSaltB64, kdfParams) {
     // Step 3: import the encryption half as a non-extractable AES-GCM key.
     // `extractable: false` means no code anywhere - not even this worker,
     // once this call returns - can call exportKey() and recover the raw
-    // bytes. Usages are 'wrapKey'/'unwrapKey', not 'encrypt'/'decrypt': this
-    // key's only job is to wrap/unwrap the vault's DEK (see crypto/dek.js) -
-    // it never encrypts vault data directly. WebCrypto enforces usages
-    // strictly, so wrapKey()/unwrapKey() calls would throw if this key were
-    // only granted 'encrypt'/'decrypt'.
+    // bytes. Usages include both wrapKey/unwrapKey (this key's normal job:
+    // wrapping/unwrapping the vault's DEK - see crypto/dek.js) AND
+    // encrypt/decrypt. The encrypt/decrypt usages are NOT for normal
+    // operation - they exist so this same key can still open a pre-DEK
+    // legacy vault (encrypted directly by this key, before the DEK/envelope
+    // model existed) during the one-time transparent migration in
+    // crypto/legacyMigration.js. AES-GCM supports all four operations on
+    // one key; WebCrypto enforces usages strictly, so both sets have to be
+    // granted up front - they can't be added later.
     const encryptionKey = await crypto.subtle.importKey(
         'raw',
         encBits,
         'AES-GCM',
         false,
-        ['wrapKey', 'unwrapKey']
+        ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
     );
 
     const authHash = bytesToBase64(new Uint8Array(authBits));

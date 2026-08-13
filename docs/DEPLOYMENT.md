@@ -136,6 +136,42 @@ import later (e.g. after restoring a backup that only contains data, not
 structure — not the normal case here, since the backup script in §4 dumps
 structure too, but worth knowing) won't error on tables that already exist.
 
+### Upgrading an existing production database (not a fresh install)
+
+**This is different from the fresh-install steps above and matters if your
+database predates the master-password-reset feature** — i.e. `users`
+doesn't yet have a `wrapped_dek_password` column. `schema.sql`'s `CREATE
+TABLE IF NOT EXISTS` will *not* add missing columns to a table that already
+exists — re-importing it here does nothing for an existing `users` table,
+silently. Use the dedicated migration instead:
+
+1. **Back up first.** Trigger the backup cron job manually (§4) or export
+   via phpMyAdmin — do this before anything below, not after.
+2. phpMyAdmin → **Import** → select `backend-php/migrations/
+   001_add_dek_columns.sql` instead of `schema.sql` → **Go**.
+3. Confirm via the **Structure** tab: `users` now has
+   `wrapped_dek_password`, `wrapped_dek_recovery`,
+   `recovery_key_created_at` (all nullable — existing accounts get `NULL`,
+   a real state meaning "hasn't migrated to the new key model yet," not an
+   error), and a new `password_resets` table exists.
+4. Deploy the updated `backend-php/public_html/`, `lib/`, and the new
+   frontend build as usual (§2).
+5. **Log in once with each existing real account.** This is what actually
+   completes the migration — it happens transparently on a normal login
+   (briefly showing "Upgrading your vault…" if you're watching closely),
+   re-wrapping that account's vault key without touching its data. Confirm
+   via phpMyAdmin afterward that `wrapped_dek_password` is now populated
+   for that account and that its vault entries are still there and correct
+   in the app.
+6. This migration script is **not** re-runnable — running `ADD COLUMN`
+   against a column that already exists errors out. If you need to confirm
+   whether it's already been applied, check the `users` table's Structure
+   tab for `wrapped_dek_password` first.
+
+See `CHANGELOG.md`'s "Compatibility fix: migrate existing accounts to the
+DEK model" entry for the full technical reasoning and how this was verified
+before being written up here.
+
 ---
 
 ## 4. Database backups: cron script + rotation + restore

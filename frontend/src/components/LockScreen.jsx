@@ -10,6 +10,7 @@ import Panel from './ui/Panel.jsx';
 const PHASE_LABEL = {
     deriving: 'Deriving key…',
     verifying: 'Unlocking…',
+    upgrading: 'Upgrading your vault…',
 };
 
 export default function LockScreen() {

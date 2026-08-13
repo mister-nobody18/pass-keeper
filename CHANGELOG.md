@@ -3,6 +3,80 @@
 This project doesn't cut versioned releases yet — entries are grouped by
 migration/audit milestone instead of a version number.
 
+## Compatibility fix: migrate existing accounts to the DEK model — 2026-08-13
+
+The previous entry below was written on the explicit, stated assumption
+that no production data existed yet - every account so far had been a
+disposable test account. That assumption turned out to be wrong: production
+has one real account, on the pre-reset-feature schema and crypto model, with
+real vault data. Deploying the DEK/envelope changes as-is would have broken
+login entirely for that account (its `wrapped_dek_password` doesn't exist)
+and, even with the schema patched, would have left its vault permanently
+unreadable through the new code (no DEK was ever created for it). This
+entry is the fix - a real account with real data now self-upgrades to the
+DEK model transparently, on its own next successful login.
+
+### Added
+
+- `backend-php/migrations/001_add_dek_columns.sql` - a real `ALTER TABLE`
+  migration for an *existing* production database (distinct from
+  `schema.sql`, which stays the fresh-install source of truth; `CREATE
+  TABLE IF NOT EXISTS` is a no-op against a table that already exists and
+  was never going to add these columns on its own).
+- `frontend/src/crypto/legacyMigration.js` (`resolveDekAfterLogin`), used
+  by both `AuthContext.login()` and `VaultLockContext.unlock()`: if a
+  login response has no `wrappedDekPassword`, the account predates the DEK
+  model. The vault is decrypted directly with the password-derived key
+  (exactly as the old model did), a fresh DEK is generated and wrapped, the
+  vault is re-encrypted under it, and the result is persisted server-side -
+  all transparently, no user action beyond typing their normal password.
+  On any failure (network drop, a losing race against another tab, a stale
+  revision), it falls back to using the vault directly with the
+  password-derived key for that session instead of blocking access -
+  migration is retried automatically on the next login, since
+  `wrapped_dek_password` stays `NULL` server-side until one actually
+  commits.
+- `backend-php/public_html/api/migrate_vault.php` - the endpoint that
+  persists the migration. Two guarded updates in one transaction: claiming
+  `wrapped_dek_password` only succeeds while it's still `NULL` (so this can
+  never overwrite a real wrap, even under a race), and the vault ciphertext
+  update uses the same optimistic-concurrency revision guard `vault.php`
+  already uses. Either both commit or neither does.
+
+### Changed
+
+- `frontend/src/crypto/kdfWorker.js`: the derived key's usages changed from
+  `['wrapKey', 'unwrapKey']` to `['wrapKey', 'unwrapKey', 'encrypt',
+  'decrypt']`. The extra two usages aren't for normal operation - they're
+  what let this same key still open a pre-DEK legacy vault (which it
+  encrypted directly, before the DEK model existed) during migration,
+  without a second derivation. `vaultCipher.js`'s envelope format never
+  changed across this whole feature, only what usages the key doing the
+  decrypting was allowed - confirmed by diffing against the pre-DEK commit.
+- `backend-php/schema.sql`: `users.wrapped_dek_password` changed from `TEXT
+  NOT NULL` to `TEXT NULL`, matching what a migrated production database
+  actually looks like. `register.php` still always supplies a value for
+  every new account (an application-level guarantee, not a DB constraint) -
+  `NULL` now has exactly one meaning: a legacy account that hasn't
+  self-migrated yet.
+
+### Verification
+
+Simulated the real production scenario end-to-end before this was
+considered safe to write up: built a test database from the actual
+pre-DEK schema (`git show` of the commit before this feature), seeded it
+with an account using real browser-derived crypto (not synthetic data) to
+match exactly what a real legacy account looks like, ran the migration SQL
+against it, then drove the real login UI - confirmed the vault decrypts
+correctly, the migration persists (`wrapped_dek_password` populated,
+vault revision incremented), a second login takes the normal already-
+migrated path, and Settings correctly shows the recovery key as not set up
+(migration is DEK-only, it doesn't invent a recovery key). Separately
+verified the failure path by disabling the migration endpoint mid-test:
+login still succeeds, the vault stays usable, the database is left
+untouched (not half-migrated), and restoring the endpoint lets the very
+next login retry and succeed.
+
 ## Master-password reset via recovery key — 2026-08-12
 
 ### Added

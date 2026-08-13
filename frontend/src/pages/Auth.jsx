@@ -9,7 +9,7 @@ import RecoveryKeyDisplay from '../components/RecoveryKeyDisplay.jsx';
 import { setVaultKey } from '../crypto/vaultKeyStore.js';
 import { cn } from '../utils/cn.js';
 
-const LOGIN_PHASE_LABEL = { deriving: 'Deriving key…', verifying: 'Signing in…' };
+const LOGIN_PHASE_LABEL = { deriving: 'Deriving key…', verifying: 'Signing in…', upgrading: 'Upgrading your vault…' };
 const SIGNUP_PHASE_LABEL = { deriving: 'Deriving key…', creating: 'Creating account…' };
 
 // Both forms live in the DOM at once (needed for the sliding overlay to make

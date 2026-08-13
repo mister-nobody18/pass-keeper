@@ -64,6 +64,7 @@ export const api = {
 
     changePassword: (payload) => request('/change_password.php', { method: 'PUT', body: payload }),
     updateRecoveryKey: (payload) => request('/recovery_key.php', { method: 'PUT', body: payload }),
+    migrateVault: (payload) => request('/migrate_vault.php', { method: 'PUT', body: payload }),
 
     // None of these three can return 401 under normal operation (none of
     // them require an existing session - see backend-php/public_html/api/

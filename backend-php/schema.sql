@@ -17,7 +17,11 @@ CREATE TABLE IF NOT EXISTS users (
     auth_hash                VARCHAR(255) NOT NULL,      -- password_hash(pepper . ':' . clientAuthHash, PASSWORD_ARGON2ID)
     kdf_salt                 VARCHAR(255) NOT NULL,      -- opaque to the server; used only by the browser's Argon2id
     kdf_params                VARCHAR(255) NOT NULL,      -- opaque to the server; e.g. '{"memory":65536,"iterations":3,"parallelism":1}'
-    wrapped_dek_password     TEXT NOT NULL,               -- opaque: the vault's DEK, AES-GCM-wrapped by a key derived from the master password
+    wrapped_dek_password     TEXT NULL,                   -- opaque: the vault's DEK, AES-GCM-wrapped by a key derived from the master password.
+                                                            -- register.php always supplies this for new accounts (application-level
+                                                            -- requirement, not a DB constraint) - NULL only ever means a legacy
+                                                            -- account that hasn't self-migrated yet, see migrations/001_add_dek_columns.sql
+                                                            -- and frontend/src/crypto/legacyMigration.js
     wrapped_dek_recovery     TEXT NULL,                   -- opaque: the SAME DEK, wrapped by a key derived from the recovery key — NULL until one is set up
     recovery_key_created_at  DATETIME NULL,               -- when wrapped_dek_recovery was last set/rotated; NULL if never set up
     failed_attempts          SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- reserved for future use, not enforced yet — see CONTRIBUTING.md

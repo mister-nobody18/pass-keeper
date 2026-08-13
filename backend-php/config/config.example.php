@@ -71,6 +71,10 @@ return [
         'password_reset_request'    => ['limit' => 3,  'window_seconds' => 3600],
         'password_reset_verify'     => ['limit' => 20, 'window_seconds' => 3600],
         'password_reset_confirm'    => ['limit' => 10, 'window_seconds' => 3600],
+        // Generous - this fires at most once per account in practice (the
+        // wrapped_dek_password IS NULL guard in migrate_vault.php makes
+        // every call after the first a no-op).
+        'migrate_vault'              => ['limit' => 20, 'window_seconds' => 3600],
     ],
 
     // Returned by the login-salt lookup for emails that don't exist, so the

@@ -5,6 +5,7 @@ import { deriveKeys, generateKdfSalt, DEFAULT_KDF_PARAMS } from '../crypto/kdfCl
 import { encryptVault } from '../crypto/vaultCipher.js';
 import { generateDek, wrapDek, unwrapDek } from '../crypto/dek.js';
 import { generateRecoveryKey, deriveRecoveryWrapKey } from '../crypto/recoveryKey.js';
+import { resolveDekAfterLogin } from '../crypto/legacyMigration.js';
 import { setVaultKey, clearVaultKey } from '../crypto/vaultKeyStore.js';
 
 const AuthContext = createContext(null);
@@ -48,7 +49,7 @@ export function AuthProvider({ children }) {
     /**
      * @param {string} email
      * @param {string} password
-     * @param {(phase: 'deriving' | 'verifying') => void} [onPhase]
+     * @param {(phase: 'deriving' | 'verifying' | 'upgrading') => void} [onPhase]
      */
     const login = useCallback(async (email, password, onPhase) => {
         onPhase?.('deriving');
@@ -58,11 +59,11 @@ export function AuthProvider({ children }) {
         onPhase?.('verifying');
         const data = await api.login({ email, authHash });
 
-        // The auth hash already proved the password is correct (the server
-        // checked it before returning wrappedDekPassword), so this unwrap
-        // should always succeed - passwordWrapKey is derived from the exact
-        // same password+salt+params that wrapped it in the first place.
-        const dek = await unwrapDek(data.wrappedDekPassword, passwordWrapKey);
+        // Resolves to the vault's DEK on the normal path. On a legacy
+        // account (predates the DEK/envelope model - real account, real
+        // data, no wrappedDekPassword yet) this transparently migrates it
+        // on the spot instead - see crypto/legacyMigration.js.
+        const dek = await resolveDekAfterLogin(data, passwordWrapKey, onPhase);
 
         setVaultKey(dek);
         setUser(data.user);
