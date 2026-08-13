@@ -47,9 +47,18 @@ export function AuthProvider({ children }) {
     }, [showToast]);
 
     /**
+     * Does NOT call setUser()/setVaultKey() when the account has 2FA
+     * enabled and this isn't a recognized device - the password alone
+     * isn't enough to finish logging in yet. The caller must then show a
+     * code-entry step and call completeTwoFactor() with the returned
+     * `passwordWrapKey` to actually finish. See lib/totp.php's server-side
+     * gate (login.php) for exactly when this branch is (and isn't) taken -
+     * notably, never on an idle-unlock re-entry.
+     *
      * @param {string} email
      * @param {string} password
      * @param {(phase: 'deriving' | 'verifying' | 'upgrading') => void} [onPhase]
+     * @returns {Promise<{ twoFactorRequired: true, passwordWrapKey: CryptoKey } | undefined>}
      */
     const login = useCallback(async (email, password, onPhase) => {
         onPhase?.('deriving');
@@ -59,12 +68,33 @@ export function AuthProvider({ children }) {
         onPhase?.('verifying');
         const data = await api.login({ email, authHash });
 
+        if (data.twoFactorRequired) {
+            return { twoFactorRequired: true, passwordWrapKey };
+        }
+
         // Resolves to the vault's DEK on the normal path. On a legacy
         // account (predates the DEK/envelope model - real account, real
         // data, no wrappedDekPassword yet) this transparently migrates it
         // on the spot instead - see crypto/legacyMigration.js.
         const dek = await resolveDekAfterLogin(data, passwordWrapKey, onPhase);
 
+        setVaultKey(dek);
+        setUser(data.user);
+    }, []);
+
+    /**
+     * Finishes a login that was interrupted by login()'s twoFactorRequired
+     * signal, once the user has entered their code. Reuses the exact same
+     * resolveDekAfterLogin() finish every other successful-login path uses.
+     *
+     * @param {string} code
+     * @param {boolean} rememberDevice
+     * @param {CryptoKey} passwordWrapKey - from login()'s twoFactorRequired result
+     * @param {(phase: 'upgrading') => void} [onPhase]
+     */
+    const completeTwoFactor = useCallback(async (code, rememberDevice, passwordWrapKey, onPhase) => {
+        const data = await api.totpVerify({ code, rememberDevice });
+        const dek = await resolveDekAfterLogin(data, passwordWrapKey, onPhase);
         setVaultKey(dek);
         setUser(data.user);
     }, []);
@@ -130,7 +160,7 @@ export function AuthProvider({ children }) {
     }, []);
 
     return (
-        <AuthContext.Provider value={{ user, setUser, loading, login, register, logout }}>
+        <AuthContext.Provider value={{ user, setUser, loading, login, completeTwoFactor, register, logout }}>
             {children}
         </AuthContext.Provider>
     );

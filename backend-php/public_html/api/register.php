@@ -108,4 +108,5 @@ pk_json_response(['user' => [
     'id' => $userId,
     'email' => $email,
     'recoveryKeyCreatedAt' => $wrappedDekRecovery !== null ? date('Y-m-d H:i:s') : null,
+    'totpEnabled' => false, // 2FA can't be enabled before the account exists
 ]], 201);

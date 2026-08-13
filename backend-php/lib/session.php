@@ -74,6 +74,29 @@ function pk_require_auth(): int
     return $userId;
 }
 
+/**
+ * Finishes an authenticated login: establishes the session, issues the CSRF
+ * cookie, and sends the standard {user, wrappedDekPassword} response shape
+ * every successful login/register/reset ends with. Shared by login.php's
+ * non-2FA path and totp_verify.php's post-code-verification path, so this
+ * "how a login actually finishes" logic exists in exactly one place.
+ */
+function pk_complete_login(array $user, array $config): void
+{
+    pk_login_session((int) $user['id'], $user['email']);
+    pk_issue_csrf_cookie($config);
+
+    pk_json_response([
+        'user' => [
+            'id' => (int) $user['id'],
+            'email' => $user['email'],
+            'recoveryKeyCreatedAt' => $user['recovery_key_created_at'] ?? null,
+            'totpEnabled' => ($user['totp_enabled_at'] ?? null) !== null,
+        ],
+        'wrappedDekPassword' => $user['wrapped_dek_password'],
+    ]);
+}
+
 function pk_destroy_session(): void
 {
     $_SESSION = [];

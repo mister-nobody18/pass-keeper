@@ -3,8 +3,16 @@ const BASE = '/api';
 // Paths where a 401 means "bad credentials" or "no such account," not "your
 // session expired" - those must never trigger the global session-expiry
 // event below, or a failed login/register would immediately wipe out any
-// (unrelated) existing session.
-const AUTH_ENTRY_PATHS = ['/register.php', '/login.php'];
+// (unrelated) existing session. totp_verify.php belongs here for the same
+// reason: it's called before a session exists at all (proving the password
+// was correct but not yet the 2FA code), so a wrong-code 401 there isn't a
+// session expiring either. Endpoints that need "wrong password/code"
+// re-verification from an ALREADY-authenticated session (recovery_key.php,
+// change_password.php, totp_disable.php, forget_devices.php,
+// delete_account.php, totp_setup_confirm.php) use 403 for that failure
+// instead of 401, specifically so they never need to be listed here - 401
+// from any of them genuinely does mean the session ended.
+const AUTH_ENTRY_PATHS = ['/register.php', '/login.php', '/totp_verify.php'];
 
 function getCookie(name) {
     const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
@@ -73,4 +81,12 @@ export const api = {
     requestPasswordReset: (email) => request('/password_reset_request.php', { method: 'POST', body: { email } }),
     verifyPasswordResetToken: (token) => request(`/password_reset_verify.php?token=${encodeURIComponent(token)}`),
     confirmPasswordReset: (payload) => request('/password_reset_confirm.php', { method: 'POST', body: payload }),
+
+    totpSetupBegin: () => request('/totp_setup_begin.php', { method: 'POST' }),
+    totpSetupConfirm: (code) => request('/totp_setup_confirm.php', { method: 'POST', body: { code } }),
+    totpDisable: (currentAuthHash) => request('/totp_disable.php', { method: 'PUT', body: { currentAuthHash } }),
+    totpVerify: (payload) => request('/totp_verify.php', { method: 'POST', body: payload }),
+    forgetDevices: (currentAuthHash) => request('/forget_devices.php', { method: 'PUT', body: { currentAuthHash } }),
+
+    deleteAccount: (currentAuthHash) => request('/delete_account.php', { method: 'DELETE', body: { currentAuthHash } }),
 };

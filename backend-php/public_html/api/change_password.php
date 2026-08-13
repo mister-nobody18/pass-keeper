@@ -50,7 +50,7 @@ if (!pk_verify_auth_value($currentAuthHash, $pkConfig['pepper'], $user['auth_has
     // The user is already authenticated for this session, so unlike login
     // there's no enumeration concern in saying specifically that the
     // *current* password was wrong.
-    pk_error_response('Current password is incorrect.', 401);
+    pk_error_response('Current password is incorrect.', 403);
 }
 
 // The vault's DEK never changes on a password change - only how it's
@@ -71,6 +71,13 @@ $updateUser->execute([
     'wrapped_dek_password' => $newWrappedDekPassword,
     'id'                   => $userId,
 ]);
+
+// A credential change is exactly the moment stale device trust should be
+// cleared, in case the password change itself was prompted by a
+// compromise - every remembered device has to be re-confirmed via 2FA
+// again after this, on any device including the one making this request.
+$db->prepare('DELETE FROM trusted_devices WHERE user_id = :id')->execute(['id' => $userId]);
+pk_clear_trusted_device_cookie($pkConfig);
 
 // Rotate the session ID as an extra precaution after a credential change.
 // This only affects THIS session/device — unlike the original Node

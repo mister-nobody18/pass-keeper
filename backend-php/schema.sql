@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS users (
                                                             -- and frontend/src/crypto/legacyMigration.js
     wrapped_dek_recovery     TEXT NULL,                   -- opaque: the SAME DEK, wrapped by a key derived from the recovery key — NULL until one is set up
     recovery_key_created_at  DATETIME NULL,               -- when wrapped_dek_recovery was last set/rotated; NULL if never set up
+    totp_secret_encrypted    TEXT NULL,                   -- opaque {v,iv,data} AES-256-GCM envelope, key derived from the server pepper
+                                                            -- (see lib/totp.php) — the one deliberate exception to "nothing sensitive
+                                                            -- stored server-side": the server must be able to verify a live 6-digit
+                                                            -- code, so this can't be one-way hashed like auth_hash. NULL = 2FA not set up.
+    totp_enabled_at          DATETIME NULL,               -- when TOTP was enabled; NULL if never enabled
     failed_attempts          SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- reserved for future use, not enforced yet — see CONTRIBUTING.md
     locked_until             DATETIME NULL,                          -- reserved for future use, not enforced yet
     created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -72,4 +77,23 @@ CREATE TABLE IF NOT EXISTS password_resets (
     KEY idx_password_resets_user_id (user_id),
     KEY idx_password_resets_expires_at (expires_at),
     CONSTRAINT fk_password_resets_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- "Remember this device" for 2FA. The raw token only ever exists in the
+-- pk_trusted_device cookie - only its SHA-256 hash is stored, same
+-- reasoning as password_resets.token_hash above. A device stays trusted
+-- (skips the TOTP challenge) until expires_at; see lib/totp.php and
+-- api/totp_verify.php. Rows are deleted outright (not just expired) when
+-- 2FA is disabled, the master password changes, or the account is deleted.
+CREATE TABLE IF NOT EXISTS trusted_devices (
+    id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id      BIGINT UNSIGNED NOT NULL,
+    token_hash   CHAR(64) NOT NULL,              -- SHA-256 hex of the raw token
+    expires_at   DATETIME NOT NULL,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_trusted_devices_token_hash (token_hash),
+    KEY idx_trusted_devices_user_id (user_id),
+    KEY idx_trusted_devices_expires_at (expires_at),
+    CONSTRAINT fk_trusted_devices_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { AlertCircle, Eye, EyeOff, KeyRound, Lock, Mail, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import Button from '../components/ui/Button.jsx';
@@ -21,7 +21,7 @@ const SIGNUP_PHASE_LABEL = { deriving: 'Deriving key…', creating: 'Creating ac
 export default function Auth() {
     const location = useLocation();
     const navigate = useNavigate();
-    const { login, register, setUser } = useAuth();
+    const { login, completeTwoFactor, register, setUser } = useAuth();
     const [mode, setMode] = useState(location.pathname === '/register' ? 'signup' : 'login');
 
     // Keeps `mode` correct if the URL changes some other way (browser back/
@@ -54,13 +54,40 @@ export default function Auth() {
         e.preventDefault();
         setLoginError('');
         try {
-            await login(loginEmail, loginPassword, setLoginPhase);
-            navigate('/');
+            const result = await login(loginEmail, loginPassword, setLoginPhase);
+            if (result?.twoFactorRequired) {
+                setTwoFactorPending({ passwordWrapKey: result.passwordWrapKey });
+            } else {
+                navigate('/');
+            }
         } catch (err) {
             setLoginError(err.message);
         } finally {
             setLoginPhase(null);
             setLoginPassword('');
+        }
+    }
+
+    // --- 2FA challenge (after a password that needs a TOTP code to finish) ---
+    const [twoFactorPending, setTwoFactorPending] = useState(null); // { passwordWrapKey } | null
+    const [twoFactorCode, setTwoFactorCode] = useState('');
+    const [rememberDevice, setRememberDevice] = useState(false);
+    const [twoFactorError, setTwoFactorError] = useState('');
+    const [twoFactorPhase, setTwoFactorPhase] = useState(null);
+    const twoFactorSubmitting = twoFactorPhase !== null;
+
+    async function handleTwoFactorSubmit(e) {
+        e.preventDefault();
+        setTwoFactorError('');
+        setTwoFactorPhase('verifying');
+        try {
+            await completeTwoFactor(twoFactorCode, rememberDevice, twoFactorPending.passwordWrapKey, setTwoFactorPhase);
+            navigate('/');
+        } catch (err) {
+            setTwoFactorError(err.message);
+            setTwoFactorCode('');
+        } finally {
+            setTwoFactorPhase(null);
         }
     }
 
@@ -104,6 +131,90 @@ export default function Auth() {
             setSignupPassword('');
             setSignupConfirm('');
         }
+    }
+
+    if (twoFactorPending) {
+        return (
+            <div className="flex min-h-screen items-center justify-center p-4">
+                <div className="w-full max-w-sm">
+                    <div className="mb-8 flex flex-col items-center text-center">
+                        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
+                            <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
+                        </div>
+                        <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">
+                            Pass Keeper
+                        </p>
+                        <h1 className="text-xl font-semibold text-ink-primary">Two-factor authentication</h1>
+                        <p className="mt-1.5 text-sm text-ink-secondary">
+                            Enter the 6-digit code from your authenticator app.
+                        </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-line bg-surface-raised p-6 shadow-overlay sm:p-10">
+                        <form onSubmit={handleTwoFactorSubmit} className="space-y-5" noValidate>
+                            <Input
+                                id="totp-code"
+                                type="text"
+                                inputMode="numeric"
+                                autoComplete="one-time-code"
+                                label="6-digit code"
+                                required
+                                autoFocus
+                                maxLength={6}
+                                disabled={twoFactorSubmitting}
+                                leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                                value={twoFactorCode}
+                                onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                            />
+
+                            <label className="flex items-start gap-2.5 text-sm text-ink-secondary">
+                                <input
+                                    type="checkbox"
+                                    checked={rememberDevice}
+                                    onChange={(e) => setRememberDevice(e.target.checked)}
+                                    disabled={twoFactorSubmitting}
+                                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-line bg-surface text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                                />
+                                <span>Remember this device for 30 days</span>
+                            </label>
+
+                            {twoFactorError && (
+                                <div
+                                    role="alert"
+                                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                                >
+                                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                    <span>{twoFactorError}</span>
+                                </div>
+                            )}
+
+                            <Button
+                                type="submit"
+                                variant="primary"
+                                className="w-full"
+                                loading={twoFactorSubmitting}
+                                disabled={twoFactorCode.length !== 6}
+                            >
+                                {twoFactorSubmitting ? LOGIN_PHASE_LABEL[twoFactorPhase] ?? 'Verifying…' : 'Verify'}
+                            </Button>
+                        </form>
+
+                        <button
+                            type="button"
+                            disabled={twoFactorSubmitting}
+                            onClick={() => {
+                                setTwoFactorPending(null);
+                                setTwoFactorCode('');
+                                setTwoFactorError('');
+                            }}
+                            className="mt-4 w-full rounded text-center text-sm text-ink-secondary transition-colors duration-fast hover:text-ink-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                        >
+                            Back to sign in
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
     }
 
     if (recoveryKey) {
@@ -400,6 +511,21 @@ export default function Auth() {
                 <p className="mt-8 flex items-center justify-center gap-1.5 font-mono text-xs text-ink-tertiary">
                     <Lock size={12} aria-hidden="true" />
                     AES-256-GCM · Argon2id · Zero-knowledge design
+                </p>
+                <p className="mt-3 flex items-center justify-center gap-3 text-xs text-ink-tertiary">
+                    <Link
+                        to="/privacy"
+                        className="rounded transition-colors duration-fast hover:text-ink-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    >
+                        Privacy Policy
+                    </Link>
+                    <span aria-hidden="true">·</span>
+                    <Link
+                        to="/cookies"
+                        className="rounded transition-colors duration-fast hover:text-ink-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    >
+                        Cookie Policy
+                    </Link>
                 </p>
             </div>
         </div>

@@ -113,11 +113,21 @@ try {
     pk_error_response('Internal server error.', 500);
 }
 
-$stmt = $db->prepare('SELECT email, wrapped_dek_password FROM users WHERE id = :id');
+$stmt = $db->prepare(
+    'SELECT id, email, wrapped_dek_password, recovery_key_created_at, totp_enabled_at FROM users WHERE id = :id'
+);
 $stmt->execute(['id' => $userId]);
 $user = $stmt->fetch();
 
-pk_login_session($userId, $user['email']);
-pk_issue_csrf_cookie($pkConfig);
+// A completed reset proves control of the account's email, not the account
+// itself - if 2FA is enabled, this still shouldn't be enough to finish
+// logging in on its own. Otherwise 2FA gives no protection against an
+// attacker who's compromised the account's email and used "forgot
+// password" to get this far. Same gate login.php uses, including the
+// trusted-device skip - see lib/totp.php.
+if (pk_totp_challenge_needed($db, $user)) {
+    pk_start_pending_totp($userId);
+    pk_json_response(['twoFactorRequired' => true]);
+}
 
-pk_json_response(['user' => ['id' => $userId, 'email' => $user['email']], 'wrappedDekPassword' => $user['wrapped_dek_password']]);
+pk_complete_login($user, $pkConfig);

@@ -69,6 +69,12 @@ collapse.**
   (`'wasm-unsafe-eval'`) without opening the door to arbitrary inline
   script execution. This reduces but does not eliminate XSS risk; see §2.
 
+- **A leaked or reused master password alone is not enough to log in**, if
+  the account has TOTP two-factor authentication enabled (opt-in, via
+  Settings) — a new session additionally requires the enrolled
+  authenticator app's live code, or a still-valid "remembered device"
+  cookie. See §2.9 for what this does and doesn't extend to.
+
 ---
 
 ## 2. What this design does NOT protect against
@@ -305,6 +311,49 @@ either the old master password or the recovery key. With the recovery key
 have full vault access, same as if they'd obtained the master password
 directly. Protecting the mailbox tied to an account matters accordingly;
 this is stated in `README.md` rather than left implicit.
+
+### 2.9 What two-factor authentication does and doesn't add
+
+**What it adds:** an attacker who has obtained the master password alone
+(phishing, a reused/leaked password, shoulder-surfing) cannot establish a
+new session without also either possessing the TOTP secret (i.e., physical
+access to the enrolled authenticator app/device) or a valid
+`pk_trusted_device` cookie for that account. This is a real, meaningful
+barrier against the single most common real-world account-compromise
+vector: a leaked or guessed password used somewhere else.
+
+**What it explicitly does not add:**
+
+- **No protection against a compromised device that's already trusted.**
+  `pk_trusted_device`'s 30-day grant means a device that's already
+  authenticated once with 2FA skips the challenge entirely afterward — if
+  that device (or its cookie) is later compromised, the attacker inherits
+  the trust, not just session access. This is the same trade-off every
+  "remember this device" feature anywhere makes; it exists specifically
+  because re-challenging every few minutes (or every login) would make 2FA
+  something people route around rather than use. See §2.3 for the standing,
+  unfixable "a compromised device breaks everything" limitation this
+  extends.
+- **No protection if the server pepper is compromised.** Unlike the vault's
+  DEK (never derivable from anything the server holds, by construction), a
+  TOTP secret *is* recoverable from a database leak **combined with** the
+  pepper — see `docs/ARCHITECTURE.md` §7 for why this exception exists at
+  all. A pepper compromise already causes a full login outage (§ elsewhere
+  in this doc); it would additionally let an attacker compute valid codes
+  for every enrolled account. This is a materially different, weaker
+  guarantee than this system's zero-knowledge properties, and is stated
+  here rather than left to look like the same thing.
+- **No protection against a compromised code-delivery path.** If an
+  attacker controls the served JavaScript (§2.1's central residual risk),
+  they can capture both the password and a live TOTP code as the user types
+  them — 2FA doesn't change §2.1's conclusion at all, it's a different
+  attack surface entirely.
+- **The reset-flow gate covers both reset paths, not just recovery.** The
+  2FA challenge on `password_reset_confirm.php` applies to *completing*
+  either mode — recovery or destructive — since both end the same way: a
+  new session. Inbox access alone, without the TOTP code, cannot finish
+  logging in via either reset path once 2FA is enabled on the account (see
+  §2.8's own scoping of what inbox access alone can and can't do).
 
 ---
 

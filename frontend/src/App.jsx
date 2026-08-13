@@ -7,6 +7,8 @@ import Dashboard from './pages/Dashboard.jsx';
 import Settings from './pages/Settings.jsx';
 import ForgotPassword from './pages/ForgotPassword.jsx';
 import ResetPassword from './pages/ResetPassword.jsx';
+import PrivacyPolicy from './pages/PrivacyPolicy.jsx';
+import CookiePolicy from './pages/CookiePolicy.jsx';
 
 function LockGate({ children }) {
     const { locked } = useVaultLock();
@@ -89,6 +91,11 @@ export default function App() {
                     </ProtectedRoute>
                 }
             />
+            {/* Unguarded on purpose - reachable whether signed in (from Settings)
+                or not (from the Auth screen's footer), never gated by
+                PublicOnlyRoute/ProtectedRoute. */}
+            <Route path="/privacy" element={<PrivacyPolicy />} />
+            <Route path="/cookies" element={<CookiePolicy />} />
             <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
     );

@@ -38,7 +38,7 @@ if ($user === false) {
 if (!pk_verify_auth_value($currentAuthHash, $pkConfig['pepper'], $user['auth_hash'])) {
     // Already authenticated for this session - no enumeration concern in
     // being specific here, same reasoning as change_password.php.
-    pk_error_response('Current password is incorrect.', 401);
+    pk_error_response('Current password is incorrect.', 403);
 }
 
 $update = $db->prepare(

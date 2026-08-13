@@ -1,6 +1,17 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, CheckCircle2, KeyRound, RefreshCw, ShieldQuestion } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+    AlertCircle,
+    AlertTriangle,
+    ArrowLeft,
+    CheckCircle2,
+    Download,
+    KeyRound,
+    RefreshCw,
+    ShieldCheck,
+    ShieldQuestion,
+    Trash2,
+} from 'lucide-react';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useVaultLock } from '../context/VaultLockContext.jsx';
@@ -8,13 +19,15 @@ import { useToast } from '../context/ToastContext.jsx';
 import { deriveKeys, generateKdfSalt, DEFAULT_KDF_PARAMS } from '../crypto/kdfClient.js';
 import { wrapDek, unwrapDekForRewrap, DekUnwrapError } from '../crypto/dek.js';
 import { generateRecoveryKey, deriveRecoveryWrapKey } from '../crypto/recoveryKey.js';
-import { setVaultKey } from '../crypto/vaultKeyStore.js';
+import { decryptVault } from '../crypto/vaultCipher.js';
+import { setVaultKey, clearVaultKey, getVaultKey } from '../crypto/vaultKeyStore.js';
 import TopBar from '../components/TopBar.jsx';
 import Panel from '../components/ui/Panel.jsx';
 import Input from '../components/ui/Input.jsx';
 import Button from '../components/ui/Button.jsx';
 import PasswordStrengthMeter from '../components/ui/PasswordStrengthMeter.jsx';
 import RecoveryKeyDisplay from '../components/RecoveryKeyDisplay.jsx';
+import TwoFactorSetup from '../components/TwoFactorSetup.jsx';
 
 const PHASE_LABEL = {
     'deriving-current': 'Deriving current key…',
@@ -24,9 +37,10 @@ const PHASE_LABEL = {
 };
 
 export default function Settings() {
-    const { user } = useAuth();
+    const { user, setUser } = useAuth();
     const { extend } = useVaultLock();
     const { showToast } = useToast();
+    const navigate = useNavigate();
     const [currentPassword, setCurrentPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
@@ -40,6 +54,41 @@ export default function Settings() {
     const [recoveryError, setRecoveryError] = useState('');
     const [recoveryPhase, setRecoveryPhase] = useState(null);
     const [newRecoveryKey, setNewRecoveryKey] = useState(null);
+
+    // --- Two-factor authentication ---
+    const [totpEnabled, setTotpEnabled] = useState(user?.totpEnabled ?? false);
+    const [showTotpSetup, setShowTotpSetup] = useState(false);
+
+    const [showDisableTotpPrompt, setShowDisableTotpPrompt] = useState(false);
+    const [disableTotpPassword, setDisableTotpPassword] = useState('');
+    const [disableTotpError, setDisableTotpError] = useState('');
+    const [disableTotpSubmitting, setDisableTotpSubmitting] = useState(false);
+
+    const [showForgetDevicesPrompt, setShowForgetDevicesPrompt] = useState(false);
+    const [forgetDevicesPassword, setForgetDevicesPassword] = useState('');
+    const [forgetDevicesError, setForgetDevicesError] = useState('');
+    const [forgetDevicesSubmitting, setForgetDevicesSubmitting] = useState(false);
+
+    // --- Data export ---
+    const [exportError, setExportError] = useState('');
+    const [exportSubmitting, setExportSubmitting] = useState(false);
+
+    // --- Delete account ---
+    const [showDeletePrompt, setShowDeletePrompt] = useState(false);
+    const [deletePassword, setDeletePassword] = useState('');
+    const [deleteConfirmText, setDeleteConfirmText] = useState('');
+    const [deleteError, setDeleteError] = useState('');
+    const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+
+    // Shared by the disable-2FA/forget-devices/delete-account re-auth
+    // prompts below - none of them need the vault's DEK, only proof the
+    // current password is correct, so this is simpler than the recovery-key
+    // section's flow above (which also needs to unwrap/re-wrap the DEK).
+    async function deriveCurrentAuthHash(password) {
+        const { kdfSalt, kdfParams } = await api.getLoginSalt(user.email);
+        const { authHash } = await deriveKeys(password, kdfSalt, JSON.parse(kdfParams));
+        return authHash;
+    }
 
     async function handleChangePassword(e) {
         e.preventDefault();
@@ -186,6 +235,104 @@ export default function Settings() {
             setRecoveryError(err.message);
         } finally {
             setRecoveryPhase(null);
+        }
+    }
+
+    async function handleDisableTotp(e) {
+        e.preventDefault();
+        setDisableTotpError('');
+        setDisableTotpSubmitting(true);
+        try {
+            const authHash = await deriveCurrentAuthHash(disableTotpPassword);
+            await api.totpDisable(authHash);
+            setTotpEnabled(false);
+            setShowDisableTotpPrompt(false);
+            setDisableTotpPassword('');
+            showToast({ tone: 'success', message: 'Two-factor authentication disabled.' });
+        } catch (err) {
+            setDisableTotpError(err.message);
+        } finally {
+            setDisableTotpSubmitting(false);
+        }
+    }
+
+    async function handleForgetDevices(e) {
+        e.preventDefault();
+        setForgetDevicesError('');
+        setForgetDevicesSubmitting(true);
+        try {
+            const authHash = await deriveCurrentAuthHash(forgetDevicesPassword);
+            const { forgotten } = await api.forgetDevices(authHash);
+            setShowForgetDevicesPrompt(false);
+            setForgetDevicesPassword('');
+            showToast({
+                tone: 'success',
+                message: forgotten > 0 ? `Forgot ${forgotten} remembered device${forgotten === 1 ? '' : 's'}.` : 'No remembered devices to forget.',
+            });
+        } catch (err) {
+            setForgetDevicesError(err.message);
+        } finally {
+            setForgetDevicesSubmitting(false);
+        }
+    }
+
+    async function handleExportData(e) {
+        e.preventDefault();
+        setExportError('');
+        setExportSubmitting(true);
+        try {
+            const { ciphertext } = await api.getVault();
+            const entries = await decryptVault(ciphertext, getVaultKey());
+
+            // Deliberately client-side only - the server holds nothing but
+            // opaque ciphertext, so a server-side "export" could only ever
+            // hand back the same encrypted blob, not something readable.
+            // This combines the account metadata already visible via /me.php
+            // with the vault entries already decrypted in this tab's memory.
+            const exportPayload = {
+                exportedAt: new Date().toISOString(),
+                account: {
+                    email: user.email,
+                    recoveryKeyCreatedAt: user.recoveryKeyCreatedAt ?? recoveryKeyCreatedAt,
+                    twoFactorEnabled: totpEnabled,
+                },
+                vaultEntries: entries,
+            };
+
+            const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'pass-keeper-export.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            showToast({ tone: 'success', message: 'Data exported.' });
+        } catch (err) {
+            setExportError(err.message);
+        } finally {
+            setExportSubmitting(false);
+        }
+    }
+
+    async function handleDeleteAccount(e) {
+        e.preventDefault();
+        setDeleteError('');
+        if (deleteConfirmText !== 'DELETE') {
+            setDeleteError('Type DELETE to confirm.');
+            return;
+        }
+        setDeleteSubmitting(true);
+        try {
+            const authHash = await deriveCurrentAuthHash(deletePassword);
+            await api.deleteAccount(authHash);
+            clearVaultKey();
+            setUser(null);
+            navigate('/login');
+        } catch (err) {
+            setDeleteError(err.message);
+            setDeleteSubmitting(false);
         }
     }
 
@@ -382,24 +529,300 @@ export default function Settings() {
                 )}
             </Panel>
 
+            <Panel padding="lg" className="mb-6">
+                {showTotpSetup ? (
+                    <TwoFactorSetup
+                        onCancel={() => setShowTotpSetup(false)}
+                        onEnabled={() => {
+                            setTotpEnabled(true);
+                            setShowTotpSetup(false);
+                            showToast({ tone: 'success', message: 'Two-factor authentication enabled.' });
+                        }}
+                    />
+                ) : (
+                    <>
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <h3 className="font-medium text-ink-primary">Two-factor authentication</h3>
+                                <p className="mt-1 text-sm text-ink-secondary">
+                                    Require a code from an authenticator app (like Google Authenticator) to sign
+                                    in, in addition to your master password.
+                                </p>
+                                <p className="mt-2 text-sm">
+                                    {totpEnabled ? (
+                                        <span className="inline-flex items-center gap-1.5 text-success">
+                                            <ShieldCheck size={14} aria-hidden="true" />
+                                            Enabled
+                                        </span>
+                                    ) : (
+                                        <span className="inline-flex items-center gap-1.5 text-ink-tertiary">
+                                            <ShieldQuestion size={14} aria-hidden="true" />
+                                            Not enabled
+                                        </span>
+                                    )}
+                                </p>
+                            </div>
+                            {!showDisableTotpPrompt && !showForgetDevicesPrompt && (
+                                <Button
+                                    type="button"
+                                    variant={totpEnabled ? 'danger' : 'secondary'}
+                                    size="sm"
+                                    onClick={() => {
+                                        if (totpEnabled) {
+                                            setShowDisableTotpPrompt(true);
+                                            setDisableTotpError('');
+                                        } else {
+                                            setShowTotpSetup(true);
+                                        }
+                                    }}
+                                >
+                                    {totpEnabled ? 'Disable' : 'Enable'}
+                                </Button>
+                            )}
+                        </div>
+
+                        {showDisableTotpPrompt && (
+                            <form onSubmit={handleDisableTotp} className="mt-4 max-w-sm space-y-4" noValidate>
+                                <p className="text-sm text-ink-secondary">
+                                    Confirm your current master password to disable two-factor authentication.
+                                </p>
+                                <Input
+                                    id="disable-totp-password"
+                                    type="password"
+                                    label="Current password"
+                                    required
+                                    autoComplete="current-password"
+                                    autoFocus
+                                    disabled={disableTotpSubmitting}
+                                    leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                                    value={disableTotpPassword}
+                                    onChange={(e) => setDisableTotpPassword(e.target.value)}
+                                />
+                                {disableTotpError && (
+                                    <div
+                                        role="alert"
+                                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                                    >
+                                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                        <span>{disableTotpError}</span>
+                                    </div>
+                                )}
+                                <div className="flex gap-2">
+                                    <Button type="submit" variant="danger" size="sm" loading={disableTotpSubmitting}>
+                                        {disableTotpSubmitting ? 'Disabling…' : 'Disable 2FA'}
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        disabled={disableTotpSubmitting}
+                                        onClick={() => {
+                                            setShowDisableTotpPrompt(false);
+                                            setDisableTotpPassword('');
+                                            setDisableTotpError('');
+                                        }}
+                                    >
+                                        Cancel
+                                    </Button>
+                                </div>
+                            </form>
+                        )}
+
+                        {totpEnabled && !showDisableTotpPrompt && (
+                            <div className="mt-4 border-t border-line pt-4">
+                                {!showForgetDevicesPrompt ? (
+                                    <div className="flex items-center justify-between gap-4">
+                                        <p className="text-sm text-ink-secondary">
+                                            Devices you've marked "remember this device" skip the code for 30 days.
+                                        </p>
+                                        <Button
+                                            type="button"
+                                            variant="secondary"
+                                            size="sm"
+                                            onClick={() => {
+                                                setShowForgetDevicesPrompt(true);
+                                                setForgetDevicesError('');
+                                            }}
+                                        >
+                                            Sign out remembered devices
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <form onSubmit={handleForgetDevices} className="max-w-sm space-y-4" noValidate>
+                                        <p className="text-sm text-ink-secondary">
+                                            Confirm your current master password. Every device will need the code
+                                            again next time.
+                                        </p>
+                                        <Input
+                                            id="forget-devices-password"
+                                            type="password"
+                                            label="Current password"
+                                            required
+                                            autoComplete="current-password"
+                                            autoFocus
+                                            disabled={forgetDevicesSubmitting}
+                                            leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                                            value={forgetDevicesPassword}
+                                            onChange={(e) => setForgetDevicesPassword(e.target.value)}
+                                        />
+                                        {forgetDevicesError && (
+                                            <div
+                                                role="alert"
+                                                className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                                            >
+                                                <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                                <span>{forgetDevicesError}</span>
+                                            </div>
+                                        )}
+                                        <div className="flex gap-2">
+                                            <Button type="submit" size="sm" loading={forgetDevicesSubmitting}>
+                                                {forgetDevicesSubmitting ? 'Signing out…' : 'Sign out remembered devices'}
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                disabled={forgetDevicesSubmitting}
+                                                onClick={() => {
+                                                    setShowForgetDevicesPrompt(false);
+                                                    setForgetDevicesPassword('');
+                                                    setForgetDevicesError('');
+                                                }}
+                                            >
+                                                Cancel
+                                            </Button>
+                                        </div>
+                                    </form>
+                                )}
+                            </div>
+                        )}
+                    </>
+                )}
+            </Panel>
+
+            <Panel padding="lg" className="mb-6">
+                <h3 className="font-medium text-ink-primary">Export your data</h3>
+                <p className="mt-1 text-sm text-ink-secondary">
+                    Downloads your vault entries (decrypted, right here in your browser) plus your basic
+                    account info as a JSON file. The server only ever holds opaque ciphertext, so this is
+                    the only way to get your data in a form you can actually read — see{' '}
+                    <Link
+                        to="/privacy"
+                        className="rounded text-accent transition-colors duration-fast hover:text-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    >
+                        Privacy Policy
+                    </Link>
+                    .
+                </p>
+                {exportError && (
+                    <div
+                        role="alert"
+                        className="mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                    >
+                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                        <span>{exportError}</span>
+                    </div>
+                )}
+                <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="mt-4"
+                    loading={exportSubmitting}
+                    leftIcon={<Download size={14} aria-hidden="true" />}
+                    onClick={handleExportData}
+                >
+                    {exportSubmitting ? 'Preparing export…' : 'Export my data'}
+                </Button>
+            </Panel>
+
             <Panel padding="lg">
-                <div className="flex items-center justify-between gap-4">
-                    <div>
-                        <h3 className="font-medium text-ink-primary">Two-factor authentication</h3>
-                        <p className="text-sm text-ink-secondary">Add an authenticator app for extra login security.</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs uppercase tracking-wide text-ink-tertiary">Coming soon</span>
-                        <button
-                            type="button"
-                            disabled
-                            title="Two-factor authentication is coming in a future update"
-                            className="relative h-6 w-11 cursor-not-allowed rounded-full border border-line bg-surface opacity-60"
-                        >
-                            <span className="absolute left-1 top-1 h-4 w-4 rounded-full bg-ink-tertiary" />
-                        </button>
-                    </div>
-                </div>
+                <h3 className="font-medium text-danger">Delete account</h3>
+                <p className="mt-1 text-sm text-ink-secondary">
+                    Permanently deletes your account and vault. This cannot be undone once confirmed —
+                    backups roll off within 14 days, but the live copy is gone immediately.
+                </p>
+
+                {!showDeletePrompt ? (
+                    <Button
+                        type="button"
+                        variant="danger"
+                        size="sm"
+                        className="mt-4"
+                        leftIcon={<Trash2 size={14} aria-hidden="true" />}
+                        onClick={() => {
+                            setShowDeletePrompt(true);
+                            setDeleteError('');
+                        }}
+                    >
+                        Delete my account
+                    </Button>
+                ) : (
+                    <form onSubmit={handleDeleteAccount} className="mt-4 max-w-sm space-y-4" noValidate>
+                        <Input
+                            id="delete-account-password"
+                            type="password"
+                            label="Current password"
+                            required
+                            autoComplete="current-password"
+                            autoFocus
+                            disabled={deleteSubmitting}
+                            leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                            value={deletePassword}
+                            onChange={(e) => setDeletePassword(e.target.value)}
+                        />
+                        <Input
+                            id="delete-account-confirm"
+                            type="text"
+                            label="Type DELETE to confirm"
+                            required
+                            disabled={deleteSubmitting}
+                            value={deleteConfirmText}
+                            onChange={(e) => setDeleteConfirmText(e.target.value)}
+                        />
+
+                        <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-warning">
+                            <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                            <span>Your vault entries, recovery key wrap, and 2FA setup are all permanently deleted.</span>
+                        </div>
+
+                        {deleteError && (
+                            <div
+                                role="alert"
+                                className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                            >
+                                <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                <span>{deleteError}</span>
+                            </div>
+                        )}
+
+                        <div className="flex gap-2">
+                            <Button
+                                type="submit"
+                                variant="danger"
+                                size="sm"
+                                loading={deleteSubmitting}
+                                disabled={deleteConfirmText !== 'DELETE'}
+                            >
+                                {deleteSubmitting ? 'Deleting…' : 'Permanently delete my account'}
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                disabled={deleteSubmitting}
+                                onClick={() => {
+                                    setShowDeletePrompt(false);
+                                    setDeletePassword('');
+                                    setDeleteConfirmText('');
+                                    setDeleteError('');
+                                }}
+                            >
+                                Cancel
+                            </Button>
+                        </div>
+                    </form>
+                )}
             </Panel>
         </div>
     );

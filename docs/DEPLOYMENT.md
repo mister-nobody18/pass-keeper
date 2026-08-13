@@ -121,15 +121,16 @@ development — nothing new to write.
 3. **Choose File** → select `schema.sql` (the copy on your own machine, from
    `backend-php/schema.sql` in this repo).
 4. Leave the format as **SQL**, click **Go**.
-5. Confirm the left sidebar now lists four tables: `users`, `vaults`,
-   `rate_limits`, `password_resets`. Click each and check *Structure*
-   matches what's in the repo's `schema.sql` — a quick visual diff, not a
-   formality; a partially-applied import (e.g. from a connection timeout on
-   a slow upload) can leave a table silently missing a column. In
-   particular, confirm `users` has `wrapped_dek_password`,
-   `wrapped_dek_recovery`, and `recovery_key_created_at` — an old backup or
-   a stale `schema.sql` copy predating the password-reset feature would be
-   missing these.
+5. Confirm the left sidebar now lists five tables: `users`, `vaults`,
+   `rate_limits`, `password_resets`, `trusted_devices`. Click each and
+   check *Structure* matches what's in the repo's `schema.sql` — a quick
+   visual diff, not a formality; a partially-applied import (e.g. from a
+   connection timeout on a slow upload) can leave a table silently missing
+   a column. In particular, confirm `users` has `wrapped_dek_password`,
+   `wrapped_dek_recovery`, `recovery_key_created_at`,
+   `totp_secret_encrypted`, and `totp_enabled_at` — an old backup or a
+   stale `schema.sql` copy predating the password-reset/2FA features would
+   be missing these.
 
 The schema uses `CREATE TABLE IF NOT EXISTS`, so re-running this same
 import later (e.g. after restoring a backup that only contains data, not
@@ -171,6 +172,29 @@ silently. Use the dedicated migration instead:
 See `CHANGELOG.md`'s "Compatibility fix: migrate existing accounts to the
 DEK model" entry for the full technical reasoning and how this was verified
 before being written up here.
+
+### Adding two-factor authentication to an already-deployed database
+
+A second, separate migration for the 2FA feature:
+`backend-php/migrations/002_add_totp.sql` — same shape and same caveats as
+`001_add_dek_columns.sql` above (not re-runnable, back up first). Follow
+the same five steps, substituting this file, and confirm `users` gains
+`totp_secret_encrypted` and `totp_enabled_at`, and a new `trusted_devices`
+table exists.
+
+**The one lesson from actually running `001_add_dek_columns.sql` against
+real production data, worth repeating here so it isn't relearned the hard
+way twice:** phpMyAdmin's **Import** tab has two different entry points —
+a server-level one (reachable without selecting a database first) and a
+per-database one (reachable by clicking the database's name in the left
+sidebar first). The server-level one does **not** carry a database
+context, so `ALTER TABLE`/`CREATE TABLE` statements run there fail with
+`#1046 - No database selected` — sometimes while phpMyAdmin's own summary
+banner still claims some queries "executed successfully," which is not
+proof anything actually changed. Always click the database name in the
+sidebar first, so the URL/session context is scoped to it, *then* use its
+Import tab — and always verify via the **Structure** tab afterward rather
+than trusting the import summary message alone.
 
 ---
 
@@ -289,6 +313,11 @@ Done directly on the server, not uploaded from a laptop:
    - `password_reset.expiry_minutes` — `10` is the default; leave as-is
      unless you have a specific reason to change it (see
      `docs/THREAT-MODEL.md` §2.8 for why it's kept short).
+   - `rate_limits.totp_verify` — add this entry if it's missing (needed for
+     the 2FA feature): `['limit' => 8, 'window_seconds' => 900]`, inside
+     the existing `rate_limits` array alongside `register`/`login`/etc. A
+     6-digit code is far lower entropy than a password, so this is kept
+     tighter than the others — see `docs/ARCHITECTURE.md` §7.
    - `fake_kdf_params` — leave as-is unless the frontend's
      `DEFAULT_KDF_PARAMS` (`frontend/src/crypto/kdfClient.js`) changes; see
      that file's comments and `CONTRIBUTING.md`'s crypto-parameters
@@ -419,6 +448,15 @@ included files it shouldn't have.
    often an SPF/DKIM or mailbox-existence issue (see §5's mail note), not a
    PHP one; `mail()` returning `true` only means the message was accepted
    for local delivery, not that it was delivered.
+10. **Set up 2FA on the test account and confirm it actually gates login.**
+    Settings → Two-factor authentication → Enable → scan the QR with a
+    real authenticator app (not a simulated code) → confirm the code
+    verifies. Log out and back in: confirm you're now challenged for a
+    code. Check "remember this device," verify, log out and back in again:
+    confirm the challenge is skipped this time. Then change the master
+    password and confirm the *next* login challenges again even though the
+    device was remembered — proves the revoke-on-password-change behavior
+    is live in production, not just in local testing.
 
-If all nine pass, the deployment matches the architecture documented in
+If all ten pass, the deployment matches the architecture documented in
 `docs/ARCHITECTURE.md` and `docs/THREAT-MODEL.md`.

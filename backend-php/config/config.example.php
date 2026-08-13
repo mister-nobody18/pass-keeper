@@ -75,6 +75,11 @@ return [
         // wrapped_dek_password IS NULL guard in migrate_vault.php makes
         // every call after the first a no-op).
         'migrate_vault'              => ['limit' => 20, 'window_seconds' => 3600],
+        // Tight - a 6-digit TOTP code has far less entropy than a password
+        // (1,000,000 possibilities, and each is valid for ~90s with clock-
+        // drift tolerance), so this is the real brute-force surface 2FA
+        // introduces. Shared by totp_setup_confirm.php and totp_verify.php.
+        'totp_verify'                => ['limit' => 8,  'window_seconds' => 900],
     ],
 
     // Returned by the login-salt lookup for emails that don't exist, so the

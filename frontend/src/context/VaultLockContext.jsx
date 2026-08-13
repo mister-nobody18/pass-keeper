@@ -62,6 +62,20 @@ export function VaultLockProvider({ children }) {
 
             onPhase?.('verifying');
             const data = await api.login({ email: user.email, authHash });
+
+            // The server-side gate (login.php) exempts this exact case - a
+            // session already authenticated as this user - specifically so
+            // idle-unlock never re-prompts for a 2FA code. This can only
+            // fire if the underlying PHP session has fully expired
+            // (independent of this app's own idle-lock timer) while this
+            // screen was still showing - rare, but real. There's no 2FA
+            // entry UI on this screen (building one twice, here and in
+            // Auth.jsx, isn't worth it for this edge case) - surface it as
+            // what it actually is: the session is gone, sign in again.
+            if (data.twoFactorRequired) {
+                throw new Error('Your session has expired. Please log out and sign in again.');
+            }
+
             const dek = await resolveDekAfterLogin(data, passwordWrapKey, onPhase);
 
             setVaultKey(dek);

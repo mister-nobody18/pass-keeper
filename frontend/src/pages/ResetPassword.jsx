@@ -51,6 +51,17 @@ export default function ResetPassword() {
     const [freshRecoveryKey, setFreshRecoveryKey] = useState(null);
     const [pendingUser, setPendingUser] = useState(null);
 
+    // 2FA challenge - a completed reset still isn't enough to finish
+    // logging in if the account has 2FA enabled (see docs/THREAT-MODEL.md:
+    // otherwise 2FA gives no protection against an attacker who's
+    // compromised the account's email). Holds whatever each path needs to
+    // actually finish once the code is verified.
+    const [twoFactorPending, setTwoFactorPending] = useState(null); // { mode, newWrapKey, dek, formattedRecoveryKey } | null
+    const [twoFactorCode, setTwoFactorCode] = useState('');
+    const [rememberDevice, setRememberDevice] = useState(false);
+    const [twoFactorError, setTwoFactorError] = useState('');
+    const [twoFactorPhase, setTwoFactorPhase] = useState(null);
+
     useEffect(() => {
         if (!token) {
             setVerifyState('invalid');
@@ -120,6 +131,11 @@ export default function ResetPassword() {
                 mode: 'recovery',
             });
 
+            if (data.twoFactorRequired) {
+                setTwoFactorPending({ mode: 'recovery', newWrapKey });
+                return;
+            }
+
             const dek = await unwrapDek(data.wrappedDekPassword, newWrapKey);
             setVaultKey(dek);
             setUser(data.user);
@@ -181,6 +197,15 @@ export default function ResetPassword() {
                 newVaultCiphertext,
             });
 
+            if (data.twoFactorRequired) {
+                // The DEK itself is already known locally (it had to be, to
+                // encrypt the fresh empty vault above) - 2FA here only
+                // gates finishing the LOGIN, not anything about the reset
+                // that already committed server-side.
+                setTwoFactorPending({ mode: 'destructive', dek, formattedRecoveryKey: formatted });
+                return;
+            }
+
             setVaultKey(dek);
             setPendingUser(data.user);
             setFreshRecoveryKey(formatted);
@@ -191,8 +216,105 @@ export default function ResetPassword() {
         }
     }
 
+    async function handleTwoFactorSubmit(e) {
+        e.preventDefault();
+        setTwoFactorError('');
+        setTwoFactorPhase('verifying');
+        try {
+            const data = await api.totpVerify({ code: twoFactorCode, rememberDevice });
+
+            if (twoFactorPending.mode === 'recovery') {
+                const dek = await unwrapDek(data.wrappedDekPassword, twoFactorPending.newWrapKey);
+                setVaultKey(dek);
+                setUser(data.user);
+                navigate('/');
+            } else {
+                setVaultKey(twoFactorPending.dek);
+                setPendingUser(data.user);
+                setFreshRecoveryKey(twoFactorPending.formattedRecoveryKey);
+            }
+        } catch (err) {
+            setTwoFactorError(err.message);
+            setTwoFactorCode('');
+        } finally {
+            setTwoFactorPhase(null);
+        }
+    }
+
     const recoverySubmitting = recoveryPhase !== null;
     const destructiveSubmitting = destructivePhase !== null;
+    const twoFactorSubmitting = twoFactorPhase !== null;
+
+    if (twoFactorPending) {
+        return (
+            <div className="flex min-h-screen items-center justify-center p-4">
+                <div className="w-full max-w-sm">
+                    <div className="mb-8 flex flex-col items-center text-center">
+                        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
+                            <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
+                        </div>
+                        <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">
+                            Pass Keeper
+                        </p>
+                        <h1 className="text-xl font-semibold text-ink-primary">Two-factor authentication</h1>
+                        <p className="mt-1.5 text-sm text-ink-secondary">
+                            Enter the 6-digit code from your authenticator app to finish resetting your password.
+                        </p>
+                    </div>
+
+                    <Panel padding="lg">
+                        <form onSubmit={handleTwoFactorSubmit} className="space-y-4" noValidate>
+                            <Input
+                                id="reset-totp-code"
+                                type="text"
+                                inputMode="numeric"
+                                autoComplete="one-time-code"
+                                label="6-digit code"
+                                required
+                                autoFocus
+                                maxLength={6}
+                                disabled={twoFactorSubmitting}
+                                leftIcon={<KeyRound size={16} aria-hidden="true" />}
+                                value={twoFactorCode}
+                                onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                            />
+
+                            <label className="flex items-start gap-2.5 text-sm text-ink-secondary">
+                                <input
+                                    type="checkbox"
+                                    checked={rememberDevice}
+                                    onChange={(e) => setRememberDevice(e.target.checked)}
+                                    disabled={twoFactorSubmitting}
+                                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-line bg-surface text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                                />
+                                <span>Remember this device for 30 days</span>
+                            </label>
+
+                            {twoFactorError && (
+                                <div
+                                    role="alert"
+                                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+                                >
+                                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                    <span>{twoFactorError}</span>
+                                </div>
+                            )}
+
+                            <Button
+                                type="submit"
+                                variant="primary"
+                                className="w-full"
+                                loading={twoFactorSubmitting}
+                                disabled={twoFactorCode.length !== 6}
+                            >
+                                {twoFactorSubmitting ? 'Verifying…' : 'Verify'}
+                            </Button>
+                        </form>
+                    </Panel>
+                </div>
+            </div>
+        );
+    }
 
     if (freshRecoveryKey) {
         return (

@@ -848,3 +848,116 @@ never moves — so the endpoint shrank to a single `UPDATE users` statement,
 atomic by nature, with no transaction or revision check needed at all. See
 `CHANGELOG.md` for this specific change and the README's API reference table
 for the endpoint as it exists now.
+
+---
+
+## 7. Two-factor authentication (TOTP) and "remember this device"
+
+**Status: implemented.** Standard TOTP (RFC 6238, built on HOTP/RFC 4226),
+compatible with Google Authenticator and any other TOTP app: 30-second
+step, 6-digit codes, SHA-1 (the algorithm virtually every TOTP app defaults
+to, and the only one some support). Enrollment is a scanned QR code
+(`otpauth://` URI) generated client-side via the `qrcode` npm package — the
+frontend's second deliberate dependency, alongside `libsodium-wrappers-sumo`.
+
+### The one deliberate exception to "the server never holds anything sensitive"
+
+Every other secret in this system (the master password, the vault's DEK,
+the recovery key) is designed so the server either never sees it at all, or
+only ever sees a one-way hash of it. A TOTP secret can't work that way: the
+server has to independently compute the *same* 6-digit code the user's
+phone just did, which is only possible if it holds the actual secret, not
+a hash of it. This is stated here explicitly rather than left as an
+inconsistency someone has to notice on their own.
+
+The mitigation: the secret is encrypted at rest, not stored in plaintext.
+`backend-php/lib/totp.php` encrypts it with AES-256-GCM, keyed by
+`hash_hmac('sha256', 'totp-secret-encryption-v1', $pepper, true)` — a
+value derived from the existing server pepper via the same domain-separation
+reasoning HKDF's `info` parameter uses on the frontend (§5), not the raw
+pepper itself. A database leak alone doesn't expose usable TOTP secrets any
+more directly than it exposes vault ciphertext's *key* — an attacker would
+additionally need the pepper (`config/config.php`, outside the web root,
+per the deployment layout). This is a materially weaker guarantee than the
+vault's zero-knowledge property and is documented as such in
+`docs/THREAT-MODEL.md` — it is not zero-knowledge, it's "encrypted rather
+than plaintext," a real but different thing.
+
+**Why the truncation/verification algorithm itself isn't a library
+dependency:** `pk_hotp_code()` and `pk_totp_verify()` are built entirely on
+PHP's own `hash_hmac('sha1', ...)` — a platform-provided primitive, the same
+"don't hand-roll what the platform already provides" rule §5/CONTRIBUTING.md
+already hold to. The truncation/formatting on top of that HMAC is a public,
+standardized construction (RFC 4226 §5.3), not a cryptographic primitive in
+its own right — the same reasoning that already justifies this codebase's
+hand-rolled Base32 encoder. **This implementation is verified against the
+official RFC 4226 test vectors** (`lib/totp.php`'s test secret
+`"12345678901234567890"` against the ten published expected codes) before
+ever being wired into a real endpoint.
+
+### Verification is tolerant of clock drift, not of guessing
+
+`pk_totp_verify()` checks the current 30-second step and one step on either
+side (±30s, 90 seconds total) — standard practice, since phone clocks drift
+slightly. What it does not tolerate is repeated guessing: `totp_verify.php`
+(the login-time check) and `totp_setup_confirm.php` (the enrollment check)
+are both rate-limited via the `totp_verify` bucket, deliberately tighter
+than every other rate limit in this system — a 6-digit code is 1,000,000
+possibilities, several orders of magnitude weaker than a password, so this
+is the actual brute-force surface 2FA introduces alongside the protection
+it adds.
+
+### The login-time gate, and why idle-unlock is exempt
+
+`pk_totp_challenge_needed()` (`lib/totp.php`) is the single function every
+2FA-gated flow calls, so this logic exists in exactly one place: it returns
+`false` (no challenge) if 2FA isn't enabled, if a session already
+authenticated as this exact user exists, or if the `pk_trusted_device`
+cookie hashes to a live row in `trusted_devices`.
+
+The middle condition is what makes `VaultLockContext.unlock()`'s
+idle-relock re-entry never re-prompt for a code — that flow re-calls
+`login.php` on every unlock (re-deriving the session as a side effect,
+§5), but only while a valid session for that same user is already live.
+Only establishing a genuinely *new* session — a fresh browser session,
+another device, or after an explicit logout — triggers the gate. Without
+this exemption, 2FA would ask for a code every few minutes throughout a
+single continuous work session, which isn't what "two-factor login" means
+in practice anywhere else either.
+
+The same gate applies to `password_reset_confirm.php`'s completion, not
+just `login.php` — deliberately: without it, an attacker who's compromised
+the account's email could use "forgot password" to bypass 2FA entirely,
+which would defeat much of the reason to have it. Both endpoints share a
+`$_SESSION['pending_2fa_user_id']` state (`pk_start_pending_totp()` /
+`pk_pending_totp_user_id()`, 5-minute expiry) that proves the password was
+already verified, without granting a real session — `totp_verify.php` is
+the only endpoint that can turn that pending state into a real one, and
+only with a correct code.
+
+### "Remember this device"
+
+A 30-day trusted-device grant, opt-in per login via a checkbox on the code
+screen (never set silently — see `docs/CookiePolicy` in the frontend). A
+random 256-bit token is generated, only its SHA-256 hash stored in
+`trusted_devices` (the same "hash, never the raw value" pattern
+`password_resets.token_hash` already uses), and the raw token set as an
+`HttpOnly`/`Secure`/`SameSite=Strict` cookie — not JS-readable, same
+posture as `pk_session`.
+
+**Revoked, not just expired, on:** disabling 2FA (`totp_disable.php`),
+changing the master password (`change_password.php`) — a credential change
+is exactly the moment stale device trust should be cleared, in case the
+change itself was prompted by a compromise — deleting the account (cascades
+via the `trusted_devices.user_id` foreign key), or an explicit "sign out of
+all remembered devices" action in Settings (`forget_devices.php`).
+
+### Schema
+
+`users` gains `totp_secret_encrypted TEXT NULL` (the AES-GCM envelope) and
+`totp_enabled_at DATETIME NULL` (presence means enabled — the same
+nullable-means-"not set up" pattern `wrapped_dek_recovery`/
+`recovery_key_created_at` already use). New table `trusted_devices`: `id,
+user_id, token_hash CHAR(64) UNIQUE, expires_at, created_at`, `ON DELETE
+CASCADE` on `user_id`. See `backend-php/migrations/002_add_totp.sql` for
+the migration against an already-deployed database.

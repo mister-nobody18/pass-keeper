@@ -144,6 +144,19 @@ what it found.
   entropy generated in the browser — it's shown to you exactly once and
   never transmitted or stored anywhere in raw form; the server only ever
   sees the opaque wrapped DEK it produces.
+- **Optional TOTP two-factor authentication** (Settings → Two-factor
+  authentication), compatible with Google Authenticator and any other
+  standard authenticator app. A new session requires either the enrolled
+  app's live code or a still-valid "remembered device" cookie (opt-in,
+  30 days), on top of the master password — verified against the official
+  RFC 4226 test vectors before ever being wired into a real endpoint. The
+  code is required to complete a password reset too, not just a normal
+  login — otherwise 2FA would give no protection against someone who's
+  compromised the account's email. See `docs/ARCHITECTURE.md` §7 for the
+  one deliberate exception this introduces (the TOTP secret is encrypted
+  at rest, not one-way hashed, since the server has to independently
+  compute a live code) and `docs/THREAT-MODEL.md` §2.9 for exactly what it
+  does and doesn't protect against.
 
 **What's explicitly not protected, or not yet built:**
 
@@ -156,8 +169,15 @@ what it found.
   password.** A stolen database plus a weak/common master password can
   still be cracked offline; Argon2id raises the cost per guess, it doesn't
   make a weak password safe.
-- **No two-factor authentication yet.** The schema has a reserved,
-  currently-unused column for it; there's no TOTP flow.
+- **Two-factor authentication is opt-in, off by default.** Accounts that
+  haven't enabled it in Settings get no additional protection beyond the
+  master password — this is a deliberate default (not everyone wants the
+  extra step), not an oversight.
+- **A "remembered device" stays trusted for 30 days regardless of what
+  happens to that device in the meantime.** If a device (or its cookie)
+  is compromised after being remembered, the attacker inherits that trust,
+  not just whatever session access they'd otherwise get — the same
+  trade-off every "remember this device" feature anywhere makes.
 - **No cross-device session revocation.** Sessions are native PHP sessions
   with no central index by user (a deliberate trade-off — see
   `docs/ARCHITECTURE.md` §3) — changing your master password rotates the
@@ -192,6 +212,16 @@ what it found.
   bypassed by an attacker rotating IPs while holding an already-stolen
   session cookie (see `CHANGELOG.md`).
 
+**Your data, your account.** Settings includes **Export my data**
+(downloads your decrypted vault entries and account info as a file,
+generated entirely in your browser — the server only ever holds opaque
+ciphertext, so this is the only way to get a readable copy) and **Delete
+my account** (permanently deletes your account and vault; cascades to
+every related row — recovery-key wrap, 2FA secret, remembered devices —
+not just the account row itself). See the in-app **Privacy Policy** and
+**Cookie Policy** (linked from the sign-in screen) for the full detail on
+what's collected, retained, and why.
+
 ## Requirements
 
 **To run the live stack (`backend-php/` + `frontend/`):**
@@ -218,8 +248,9 @@ what it found.
   (Node + `vite build`) is required to *produce* the frontend bundle before
   upload — that happens on a developer machine or in CI, never on the host.
   Zero PHP/Composer dependencies are used on the backend; the frontend has
-  exactly one crypto dependency (`libsodium-wrappers-sumo`, for Argon2id —
-  see `docs/ARCHITECTURE.md` §5).
+  exactly two deliberate dependencies: `libsodium-wrappers-sumo` for
+  Argon2id (see `docs/ARCHITECTURE.md` §5) and `qrcode` for rendering the
+  2FA enrollment QR code (§7).
 
 **To run the legacy Node prototype instead:** Node.js 18+, documented in
 full below.
@@ -331,7 +362,22 @@ request needs the CSRF header described below, except `register` and
 | `/api/recovery_key.php` | PUT | Session | **Yes** | Yes (shares `change_password`'s bucket) | Set up or rotate the recovery-key wrap of the vault's DEK. Requires re-proving the current password. |
 | `/api/password_reset_request.php` | POST | — | No | Yes (`password_reset_request`, by IP *and* by account) | Request a reset link by email. Always returns the same generic message. |
 | `/api/password_reset_verify.php` | GET | — | No | Yes (`password_reset_verify`, by IP) | Check a reset token is valid without consuming it; returns whether a recovery-key wrap exists for this account. |
-| `/api/password_reset_confirm.php` | POST | — | No | Yes (`password_reset_confirm`, by IP) | Consume a reset token and apply either a recovery-key reset (vault preserved) or a destructive reset (fresh empty vault). Establishes a new session on success. |
+| `/api/password_reset_confirm.php` | POST | — | No | Yes (`password_reset_confirm`, by IP) | Consume a reset token and apply either a recovery-key reset (vault preserved) or a destructive reset (fresh empty vault). Establishes a new session on success, unless 2FA is enabled — see below. |
+| `/api/migrate_vault.php` | PUT | Session | **Yes** | Yes (`migrate_vault`, by account) | One-time, self-service upgrade of a pre-DEK-model account to the envelope model; fires automatically on that account's next login, not called directly by the UI. See `docs/ARCHITECTURE.md` §6 and `CHANGELOG.md`. |
+| `/api/totp_setup_begin.php` | POST | Session | **Yes** | Yes (shares `change_password`'s bucket) | Generate a fresh TOTP secret (held server-side only in the session until confirmed, not persisted). |
+| `/api/totp_setup_confirm.php` | POST | Session | **Yes** | Yes (`totp_verify`) | Confirm the code from an authenticator app and persist the (encrypted) secret, enabling 2FA. |
+| `/api/totp_disable.php` | PUT | Session | **Yes** | Yes (shares `change_password`'s bucket) | Disable 2FA and clear all remembered devices. Requires re-proving the current password. |
+| `/api/totp_verify.php` | POST | — (pending-2FA session state only) | No | Yes (`totp_verify`, by pending account) | Complete a login/reset that was interrupted by a 2FA challenge; optionally sets a 30-day "remember this device" cookie. |
+| `/api/forget_devices.php` | PUT | Session | **Yes** | Yes (shares `change_password`'s bucket) | Revoke every remembered device for the account. Requires re-proving the current password. |
+| `/api/delete_account.php` | DELETE | Session | **Yes** | Yes (shares `change_password`'s bucket) | Permanently delete the account; cascades to its vault, recovery-key wrap, 2FA secret, and remembered devices. Requires re-proving the current password. |
+
+**2FA gating on login and password reset.** If an account has 2FA enabled,
+`login.php` and `password_reset_confirm.php` return `{"twoFactorRequired":
+true}` instead of completing the session — unless a session already
+authenticated as that user exists (idle-unlock is never re-challenged) or
+the request carries a live `pk_trusted_device` cookie. The client then
+calls `totp_verify.php` with the code to actually finish. See
+`docs/ARCHITECTURE.md` §7.
 
 **Auth & session.** A successful `register`/`login` sets an HttpOnly,
 `SameSite=Strict` session cookie (`Secure` when `app_env` is

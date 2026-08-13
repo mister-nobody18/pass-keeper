@@ -3,6 +3,94 @@
 This project doesn't cut versioned releases yet — entries are grouped by
 migration/audit milestone instead of a version number.
 
+## Two-factor authentication, account deletion, data export, privacy pages — 2026-08-13
+
+### Added
+
+- **TOTP two-factor authentication** (RFC 6238/4226), compatible with
+  Google Authenticator and any other standard authenticator app. Enrollment
+  via a scanned QR code (`qrcode` npm package — the frontend's second
+  deliberate dependency) or manual secret entry. `backend-php/lib/totp.php`
+  implements the HOTP/TOTP algorithm on PHP's built-in `hash_hmac('sha1',
+  ...)` (no library) and is verified against the official RFC 4226 test
+  vectors before being wired into any endpoint. The secret is encrypted at
+  rest (AES-256-GCM, keyed by a value derived from the server pepper) — the
+  one deliberate exception to this project's "the server never holds
+  anything sensitive readably" rule, since the server has to independently
+  compute a live 6-digit code. See `docs/ARCHITECTURE.md` §7 and
+  `docs/THREAT-MODEL.md` §2.9.
+- **"Remember this device" for 30 days**, opt-in per login via a checkbox
+  on the 2FA challenge screen — never set silently. Revoked on disabling
+  2FA, changing the master password, or deleting the account.
+- 2FA gates both `login.php` and `password_reset_confirm.php` — a
+  password-reset completion still requires the code (unless the device is
+  already remembered), otherwise 2FA would give no protection against
+  someone who's compromised the account's email. Idle-unlock
+  (`VaultLockContext.unlock()`) is deliberately exempt — it only re-proves
+  the password against an already-authenticated session, so it never
+  re-prompts for a code.
+- New endpoints: `totp_setup_begin.php`, `totp_setup_confirm.php`,
+  `totp_disable.php`, `totp_verify.php`, `forget_devices.php`. New `users`
+  columns (`totp_secret_encrypted`, `totp_enabled_at`) and a new
+  `trusted_devices` table (`backend-php/migrations/002_add_totp.sql` for
+  already-deployed databases).
+- **Account deletion** (`delete_account.php`) — a single `DELETE` on
+  `users` that cascades to the account's vault, recovery-key wrap, 2FA
+  secret, and remembered devices via existing foreign keys. Settings gains
+  a "Delete my account" flow requiring current-password re-entry plus a
+  separate typed confirmation.
+- **Client-side data export** — a new "Export my data" button in Settings
+  downloads the vault entries already decrypted in the current session
+  plus basic account metadata as a JSON file, entirely client-side (a
+  `Blob` + anchor click, no new dependency). Deliberately not a server
+  endpoint: the server only ever holds opaque ciphertext, so a server-side
+  "export" could only ever hand back the same encrypted blob, not
+  something readable.
+- **In-app Privacy Policy and Cookie Policy pages** (`/privacy`,
+  `/cookies`, linked from the sign-in screen and Settings) — an honest,
+  specific description of what this application actually collects, why,
+  how long it's kept, and what rights are available (export/erasure via
+  the features above), not generic boilerplate. Written because this
+  instance now has users beyond the operator's own household, which
+  changes GDPR's applicability.
+
+### Fixed
+
+- A real bug caught during this session's own testing, not a pre-existing
+  one: every "re-enter your current password/code to confirm" endpoint
+  (`recovery_key.php`, `change_password.php`, and now `totp_disable.php`,
+  `forget_devices.php`, `delete_account.php`, `totp_setup_confirm.php`)
+  returned `401` for "you typed it wrong" — but `api/client.js`'s global
+  handler treats any authenticated-route `401` as "your session expired"
+  and silently logs the user out. Fixed by using `403` for these
+  authenticated re-verification failures, reserving `401` for genuinely no
+  session; `totp_verify.php` (which runs before a session exists at all)
+  keeps `401` and was added to `AUTH_ENTRY_PATHS` instead, the same
+  treatment `login.php`/`register.php` already had.
+- A second bug caught the same way: `pk_complete_login()` (the shared
+  login-finishing helper both `login.php` and the new `totp_verify.php`
+  use) never included `totpEnabled` in its response, so after any
+  2FA-gated login the frontend's `user.totpEnabled` was `undefined` —
+  Settings would show "Not enabled" even when 2FA was actually on. Fixed
+  by including it consistently across `login.php`, `register.php`,
+  `totp_verify.php`, and `password_reset_confirm.php`'s responses.
+- `migrate_vault.php` (from the previous entry below) had never actually
+  been added to `README.md`'s API reference table — fixed alongside the
+  new endpoints added in this entry.
+
+### Verification
+
+Three Playwright suites (21 checks total) against the real local dev
+stack: enrollment with a QR-derived secret and a real RFC-4226-verified
+code (not a stubbed check), the full login challenge/wrong-code/
+remember-device cycle, idle-unlock exemption, password-change device
+revocation, the `totp_verify` rate limit actually engaging after repeated
+wrong codes, the password-reset flow's 2FA gate, disabling 2FA, data
+export content (decrypted entries, not ciphertext), and account deletion
+followed by successful re-registration of the same email with a
+confirmed-empty fresh vault (proving the old data was truly gone, not
+just hidden).
+
 ## Fix: SPA client-side routes 404 on direct load — 2026-08-13
 
 `backend-php/public_html/.htaccess` had no SPA-fallback rewrite rule -

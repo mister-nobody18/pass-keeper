@@ -8,7 +8,7 @@ pk_require_method('GET');
 $userId = pk_require_auth();
 
 $db = pk_db();
-$stmt = $db->prepare('SELECT recovery_key_created_at, wrapped_dek_password FROM users WHERE id = :id');
+$stmt = $db->prepare('SELECT recovery_key_created_at, wrapped_dek_password, totp_enabled_at FROM users WHERE id = :id');
 $stmt->execute(['id' => $userId]);
 $row = $stmt->fetch();
 
@@ -28,4 +28,5 @@ pk_json_response(['user' => [
     'id' => $userId,
     'email' => pk_current_email(),
     'recoveryKeyCreatedAt' => $row['recovery_key_created_at'] ?? null,
+    'totpEnabled' => $row['totp_enabled_at'] !== null,
 ], 'wrappedDekPassword' => $row['wrapped_dek_password'] ?? null]);
