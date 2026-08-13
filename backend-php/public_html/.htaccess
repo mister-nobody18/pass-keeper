@@ -24,6 +24,21 @@
     # ever applies to the static frontend, never to a PHP API response.
     RewriteCond %{REQUEST_URI} !^/api/
     RewriteRule ^ - [E=SPA_CONTEXT:1]
+
+    # SPA fallback: any request that isn't under /api/ and doesn't match a
+    # real file or directory (a client-side route like /reset-password,
+    # /settings, /forgot-password - anything React Router handles, not the
+    # server) falls through to index.html so the app can load and take over
+    # routing itself. Without this, only "/" works on a fresh load or a
+    # direct link/bookmark/refresh - every other route 404s, because the
+    # server has no actual file at that path. This is exactly what broke
+    # password-reset emails: the link points straight at /reset-password,
+    # which no one had ever needed to load directly before that feature
+    # existed.
+    RewriteCond %{REQUEST_URI} !^/api/
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.html [L]
 </IfModule>
 
 <IfModule mod_headers.c>

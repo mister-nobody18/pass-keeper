@@ -366,21 +366,34 @@ included files it shouldn't have.
    (no `s`) — confirm it 301s to `https://`. Confirm the padlock shows a
    valid cert.
 2. **Run every URL in §6** — all 403/404.
-3. **Register a real test account** through the actual UI at
+3. **Client-side routes work on a direct/fresh load, not just via in-app
+   navigation.** Visit `https://vault.soricu.com/settings`,
+   `/forgot-password`, and `/reset-password?token=x` directly (paste the
+   URL, don't click to them from within the app) — all should return
+   **200** and show the app, not a server 404. These are routes React
+   Router handles client-side; without an SPA-fallback rewrite rule in
+   `.htaccess` (`RewriteCond %{REQUEST_FILENAME} !-f` /
+   `!-d` → `RewriteRule ^ index.html`), the server looks for a real file at
+   that path, finds nothing, and 404s — which is exactly how a real
+   deployment's password-reset emails were caught broken (the emailed link
+   points straight at `/reset-password`, a path nobody had ever needed to
+   load directly before that feature existed). This is easy to miss if you
+   only ever test by clicking around inside an already-loaded app.
+4. **Register a real test account** through the actual UI at
    `https://vault.soricu.com`. Confirm the "Deriving key…" loading state
    appears briefly (proves the Argon2id WASM module loaded — if it hangs or
    errors here, open the browser console and check for a CSP violation
    naming `script-src`/`'wasm-unsafe-eval'` before anything else).
-4. **Open browser DevTools → Application/Storage → Cookies** for
+5. **Open browser DevTools → Application/Storage → Cookies** for
    `vault.soricu.com`. Confirm the session cookie (`pk_session`) shows
    `HttpOnly` ✓, `Secure` ✓, `SameSite=Strict`. Confirm `pk_csrf` is
    present and **not** `HttpOnly` (it has to be JS-readable — see
    `docs/ARCHITECTURE.md`).
-5. **Add one vault entry, then reload the page.** Confirm it shows the lock
+6. **Add one vault entry, then reload the page.** Confirm it shows the lock
    screen (not a broken/blank page — see `docs/ARCHITECTURE.md` §5 on why
    a reload always re-locks), and that entering the same password unlocks
    it and the entry is still there.
-6. **Check response headers** on the main page (DevTools → Network → click
+7. **Check response headers** on the main page (DevTools → Network → click
    the document request → Headers): `Content-Security-Policy` present and
    matching the CSP set in `backend-php/public_html/.htaccess`,
    `Strict-Transport-Security` present, `X-Frame-Options: DENY` present.
@@ -390,13 +403,13 @@ included files it shouldn't have.
    `env=SPA_CONTEXT` scoping in `.htaccess` is actually working and not
    silently overwriting the API's own header (see the comment at the top
    of that `.htaccess` for why this specific check matters).
-7. **Trigger the backup cron job once manually** rather than waiting for
+8. **Trigger the backup cron job once manually** rather than waiting for
    03:00 — DirectAdmin's Cron Jobs page usually has a "run now" action, or
    just temporarily set it to run a minute from now and change it back
    after. Confirm a `.sql.gz` file appears in
    `domains/vault.soricu.com/backups/` via File Manager, and that you
    received (or can see logged) the row-count output.
-8. **Trigger a real password-reset email.** From the login page, click
+9. **Trigger a real password-reset email.** From the login page, click
    "Forgot password?", submit the test account's real email address, and
    confirm the email actually arrives (check spam too) within a minute or
    two. Click the link, confirm it lands on `/reset-password` with a valid
@@ -407,5 +420,5 @@ included files it shouldn't have.
    PHP one; `mail()` returning `true` only means the message was accepted
    for local delivery, not that it was delivered.
 
-If all eight pass, the deployment matches the architecture documented in
+If all nine pass, the deployment matches the architecture documented in
 `docs/ARCHITECTURE.md` and `docs/THREAT-MODEL.md`.

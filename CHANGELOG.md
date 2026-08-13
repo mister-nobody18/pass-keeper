@@ -3,6 +3,31 @@
 This project doesn't cut versioned releases yet — entries are grouped by
 migration/audit milestone instead of a version number.
 
+## Fix: SPA client-side routes 404 on direct load — 2026-08-13
+
+`backend-php/public_html/.htaccess` had no SPA-fallback rewrite rule -
+undiscovered since the original PHP migration, because nothing before the
+password-reset feature ever needed to be reached by a direct/external link.
+A password-reset email's link points straight at `/reset-password`, which
+has no real file behind it (React Router handles that path client-side) -
+without a fallback rule, the server 404s before the app ever gets a chance
+to load. `/settings`, `/forgot-password`, and any other client-side route
+had the exact same problem on a fresh load or a page refresh, just never
+noticed because everything had always been reached by clicking around
+inside an already-loaded app until now.
+
+Fixed by adding the standard SPA-fallback rule (any request not under
+`/api/` and not matching a real file/directory falls through to
+`index.html`), scoped with the same `!^/api/` condition the existing
+`SPA_CONTEXT` CSP-scoping rule already used. Verified directly against the
+live production server: every client-side route (`/settings`,
+`/forgot-password`, `/reset-password`, an arbitrary unknown path) now
+returns 200, `/api/*` endpoints are unaffected, and the CSP scoping between
+the SPA and the API still isn't crossed. `docs/DEPLOYMENT.md`'s post-deploy
+checklist gained a new step specifically testing this (direct navigation to
+a client-side route, not navigation from within the app), so this class of
+bug gets caught before going live next time, not after.
+
 ## Compatibility fix: migrate existing accounts to the DEK model — 2026-08-13
 
 The previous entry below was written on the explicit, stated assumption
