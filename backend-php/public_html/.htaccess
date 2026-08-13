@@ -57,6 +57,24 @@
     Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" env=SPA_CONTEXT
 </IfModule>
 
+<IfModule mod_headers.c>
+    # index.html had no Cache-Control at all, which left browsers to guess
+    # via heuristic caching - in practice this meant a deployed frontend
+    # update could sit invisible behind a stale cached index.html until a
+    # hard refresh, since index.html is what decides which hashed
+    # /assets/*.js bundle gets loaded. Force it to always revalidate.
+    <FilesMatch "^index\.html$">
+        Header set Cache-Control "no-cache, must-revalidate"
+    </FilesMatch>
+
+    # The Vite build fingerprints every asset filename with a content hash
+    # (assets/index-<hash>.js, etc.) - a changed file always ships under a
+    # new name, so these are safe to cache aggressively and immutably.
+    <FilesMatch "\.(js|css|woff2?|svg|png|jpe?g|gif|ico)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+</IfModule>
+
 # Never serve dotfiles (.env, .git/*, .htaccess itself, etc.) from here, even by mistake.
 <FilesMatch "^\.">
     Require all denied
