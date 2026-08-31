@@ -356,7 +356,7 @@ silently falling back to something weaker.
 
 ---
 
-## 6. Verification URLs — each of these should return 403 or 404
+## 6. Verification URLs
 
 Open each in a browser (or check via your browser's Network tab / view-source
 so you see the actual status code, not just "the page looks empty") right
@@ -365,27 +365,54 @@ the first place, per the layout in §1 — this list exists to catch upload
 mistakes (an extra file dragged in, a whole-repo zip extracted in the wrong
 place) and to confirm `.htaccess` is actually being read.
 
+**Two different "safe" outcomes, depending on the path** — the SPA's
+client-side router needs a catch-all rewrite (`RewriteCond
+%{REQUEST_FILENAME} !-f` / `!-d` → `RewriteRule ^ index.html`, same rule
+that makes §7 step 3's direct-load routes work) so any URL with no real
+file behind it serves the app shell with a **200**, not a 404. That 200 is
+correct, not a leak — it only means "no such file," same as any 404 would,
+just with the SPA's shell as the body instead of an error page. A handful
+of paths are blocked *before* that rewrite even runs and correctly still
+403:
+
 | URL | Expected | Confirms |
 |---|---|---|
-| `https://vault.soricu.com/.env` | 403/404 | No stray env file, dotfile block works |
-| `https://vault.soricu.com/.htaccess` | 403/404 | `.htaccess` itself is never servable |
-| `https://vault.soricu.com/.git/config` | 403/404 | No accidental `.git/` upload |
-| `https://vault.soricu.com/config.php` | 403/404 | No stray config copy landed in `public_html/` |
-| `https://vault.soricu.com/config/config.php` | 404 | `config/` isn't reachable from the web root at all (§1) |
-| `https://vault.soricu.com/schema.sql` | 403/404 | `.sql` extension block works, and it wasn't uploaded into `public_html/` anyway |
-| `https://vault.soricu.com/backups/` | 404 | `backups/` isn't under `public_html/`; also confirms directory listing is off |
-| `https://vault.soricu.com/cron/db-backup.php` | 404 | `cron/` isn't under `public_html/` |
-| `https://vault.soricu.com/README.md` | 404 | The repo's docs/source weren't uploaded wholesale |
+| `https://vault.soricu.com/.env` | 403 | Dotfile block runs before the SPA rewrite |
+| `https://vault.soricu.com/.htaccess` | 403 | `.htaccess` itself is never servable |
+| `https://vault.soricu.com/.git/config` | 403 | No accidental `.git/` upload |
+| `https://vault.soricu.com/config.php` | 200, SPA shell | No stray config copy landed in `public_html/` — see verification below |
+| `https://vault.soricu.com/config/config.php` | 404 or a DirectAdmin default-page redirect | `config/` isn't reachable from the web root at all (§1) |
+| `https://vault.soricu.com/schema.sql` | 200, SPA shell | Wasn't uploaded into `public_html/` — see verification below |
+| `https://vault.soricu.com/backups/` | 200, SPA shell | `backups/` isn't under `public_html/` — see verification below |
+| `https://vault.soricu.com/cron/db-backup.php` | 200, SPA shell | `cron/` isn't under `public_html/` — see verification below |
+| `https://vault.soricu.com/README.md` | 200, SPA shell | The repo's docs/source weren't uploaded wholesale |
 
-If any of these return **200**, stop and fix it before going further — in
-rough order of likelihood, the usual causes are: the document root points
-at `domains/vault.soricu.com/` instead of its `public_html/` subdirectory
-(fixes the `config/config.php` and `cron/` checks at once), `.htaccess`
-didn't upload or `AllowOverride` isn't enabled for this domain (contact
-your host if `mod_headers`/`mod_rewrite` directives seem to have no effect
-at all — DirectAdmin/LiteSpeed usually honor `.htaccess` by default, but a
-custom LiteSpeed vhost config can disable overrides), or a bulk upload
-included files it shouldn't have.
+**Verifying a "200, SPA shell" row is actually safe** (not real file
+content that happens to return 200): compare it against a deliberately
+made-up path, e.g. `https://vault.soricu.com/this-definitely-does-not-exist`.
+If the two responses have the same `Content-Length`/ETag and the same HTML
+(view-source and check for `<title>Pass Keeper</title>`, not real PHP/SQL
+content), the "200" path is genuinely non-existent and just caught by the
+same catch-all as the control path — not exposed. If a "200, SPA shell" row
+instead returns something that *isn't* the app shell (real PHP output, raw
+SQL, a directory listing), stop and treat it as a live exposure.
+
+If any of the **403 rows** return 200, or the API check below fails, stop
+and fix it before going further — in rough order of likelihood, the usual
+causes are: the document root points at `domains/vault.soricu.com/` instead
+of its `public_html/` subdirectory, `.htaccess` didn't upload or
+`AllowOverride` isn't enabled for this domain (contact your host if
+`mod_headers`/`mod_rewrite` directives seem to have no effect at all —
+DirectAdmin/LiteSpeed usually honor `.htaccess` by default, but a custom
+LiteSpeed vhost config can disable overrides), or a bulk upload included
+files it shouldn't have.
+
+**Also confirm the SPA catch-all isn't swallowing the API itself:** visit
+`https://vault.soricu.com/api/me.php` — it must return real JSON (e.g.
+`{"error":"Not authenticated."}` with a `401`), not the SPA shell. If it
+returns the app's `index.html` instead, the `RewriteCond` that excludes
+`/api/` from the catch-all isn't matching and the backend is unreachable
+through the web root.
 
 ---
 
