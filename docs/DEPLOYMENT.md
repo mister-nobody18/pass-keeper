@@ -73,9 +73,9 @@ removes it.
    This produces `frontend/dist/` — its *contents* (not the folder itself)
    are what get uploaded into `public_html/` in step 4.
 
-3. **Upload the app**, via File Manager (or its "Upload" / zip-and-extract
-   feature — zipping locally and extracting through File Manager is much
-   faster than uploading hundreds of files individually):
+3. **Upload the app**, via File Manager's multi-file/folder upload
+   (zip-and-extract isn't a reliable option on this host — files have to
+   go up by hand):
    - `backend-php/lib/` → `domains/vault.soricu.com/lib/`
    - `backend-php/cron/` → `domains/vault.soricu.com/cron/`
    - `backend-php/schema.sql` → `domains/vault.soricu.com/schema.sql`
