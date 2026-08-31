@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertCircle, AlertTriangle, KeyRound, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, KeyRound, Loader2, ShieldAlert } from 'lucide-react';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { deriveKeys, generateKdfSalt, DEFAULT_KDF_PARAMS } from '../crypto/kdfClient.js';
@@ -8,7 +8,9 @@ import { generateDek, wrapDek, unwrapDek, unwrapDekForRewrap, DekUnwrapError } f
 import { generateRecoveryKey, deriveRecoveryWrapKey, parseRecoveryKey } from '../crypto/recoveryKey.js';
 import { encryptVault } from '../crypto/vaultCipher.js';
 import { setVaultKey } from '../crypto/vaultKeyStore.js';
+import AuthPageHeader from '../components/ui/AuthPageHeader.jsx';
 import Button from '../components/ui/Button.jsx';
+import ErrorAlert from '../components/ui/ErrorAlert.jsx';
 import Input from '../components/ui/Input.jsx';
 import Panel from '../components/ui/Panel.jsx';
 import PasswordStrengthMeter from '../components/ui/PasswordStrengthMeter.jsx';
@@ -249,18 +251,11 @@ export default function ResetPassword() {
         return (
             <div className="flex min-h-screen items-center justify-center p-4">
                 <div className="w-full max-w-sm">
-                    <div className="mb-8 flex flex-col items-center text-center">
-                        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                            <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                        </div>
-                        <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">
-                            Pass Keeper
-                        </p>
-                        <h1 className="text-xl font-semibold text-ink-primary">Two-factor authentication</h1>
+                    <AuthPageHeader title="Two-factor authentication">
                         <p className="mt-1.5 text-sm text-ink-secondary">
                             Enter the 6-digit code from your authenticator app to finish resetting your password.
                         </p>
-                    </div>
+                    </AuthPageHeader>
 
                     <Panel padding="lg">
                         <form onSubmit={handleTwoFactorSubmit} className="space-y-4" noValidate>
@@ -290,15 +285,7 @@ export default function ResetPassword() {
                                 <span>Remember this device for 30 days</span>
                             </label>
 
-                            {twoFactorError && (
-                                <div
-                                    role="alert"
-                                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                >
-                                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                    <span>{twoFactorError}</span>
-                                </div>
-                            )}
+                            {twoFactorError && <ErrorAlert>{twoFactorError}</ErrorAlert>}
 
                             <Button
                                 type="submit"
@@ -320,16 +307,12 @@ export default function ResetPassword() {
         return (
             <div className="flex min-h-screen items-center justify-center p-4">
                 <div className="w-full max-w-sm">
-                    <div className="mb-8 flex flex-col items-center text-center">
-                        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                            <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                        </div>
-                        <h1 className="text-xl font-semibold text-ink-primary">Password reset</h1>
+                    <AuthPageHeader title="Password reset">
                         <p className="mt-1.5 text-sm text-ink-secondary">
                             Your vault has been reset with a fresh, empty vault. Save this new recovery key so you
                             don't lose access again.
                         </p>
-                    </div>
+                    </AuthPageHeader>
                     <RecoveryKeyDisplay
                         recoveryKey={freshRecoveryKey}
                         onContinue={() => {
@@ -346,15 +329,7 @@ export default function ResetPassword() {
     return (
         <div className="flex min-h-screen items-center justify-center p-4">
             <div className="w-full max-w-sm">
-                <div className="mb-8 flex flex-col items-center text-center">
-                    <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                        <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                    </div>
-                    <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">
-                        Pass Keeper
-                    </p>
-                    <h1 className="text-xl font-semibold text-ink-primary">Reset your password</h1>
-                </div>
+                <AuthPageHeader title="Reset your password" />
 
                 {verifyState === 'loading' && (
                     <Panel padding="lg" className="flex items-center justify-center gap-2 py-10 text-sm text-ink-secondary">
@@ -365,10 +340,7 @@ export default function ResetPassword() {
 
                 {verifyState === 'invalid' && (
                     <Panel padding="lg">
-                        <div className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger">
-                            <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                            <span>This reset link is invalid, expired, or already used.</span>
-                        </div>
+                        <ErrorAlert>This reset link is invalid, expired, or already used.</ErrorAlert>
                         <Link
                             to="/forgot-password"
                             className="mt-4 inline-block rounded text-sm text-accent transition-colors duration-fast hover:text-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -458,15 +430,7 @@ export default function ResetPassword() {
                                     error={confirmPassword && confirmPassword !== newPassword ? "Passwords don't match." : undefined}
                                 />
 
-                                {recoveryError && (
-                                    <div
-                                        role="alert"
-                                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                    >
-                                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                        <span>{recoveryError}</span>
-                                    </div>
-                                )}
+                                {recoveryError && <ErrorAlert>{recoveryError}</ErrorAlert>}
 
                                 <Button type="submit" variant="primary" className="w-full" loading={recoverySubmitting}>
                                     {recoverySubmitting ? RECOVERY_PHASE_LABEL[recoveryPhase] : 'Reset password'}
@@ -530,15 +494,7 @@ export default function ResetPassword() {
                                     </span>
                                 </label>
 
-                                {destructiveError && (
-                                    <div
-                                        role="alert"
-                                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                    >
-                                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                        <span>{destructiveError}</span>
-                                    </div>
-                                )}
+                                {destructiveError && <ErrorAlert>{destructiveError}</ErrorAlert>}
 
                                 <Button
                                     type="submit"

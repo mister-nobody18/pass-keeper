@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-    AlertCircle,
     AlertTriangle,
     ArrowLeft,
     CheckCircle2,
@@ -22,6 +21,7 @@ import { generateRecoveryKey, deriveRecoveryWrapKey } from '../crypto/recoveryKe
 import { decryptVault } from '../crypto/vaultCipher.js';
 import { setVaultKey, clearVaultKey, getVaultKey } from '../crypto/vaultKeyStore.js';
 import TopBar from '../components/TopBar.jsx';
+import ErrorAlert from '../components/ui/ErrorAlert.jsx';
 import Panel from '../components/ui/Panel.jsx';
 import Input from '../components/ui/Input.jsx';
 import Button from '../components/ui/Button.jsx';
@@ -408,15 +408,7 @@ export default function Settings() {
                         error={confirmPassword && confirmPassword !== newPassword ? "Passwords don't match." : undefined}
                     />
 
-                    {error && (
-                        <div
-                            role="alert"
-                            className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                        >
-                            <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                            <span>{error}</span>
-                        </div>
-                    )}
+                    {error && <ErrorAlert>{error}</ErrorAlert>}
                     {success && (
                         <div className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 px-3 py-2.5 text-sm text-success">
                             <CheckCircle2 size={16} className="shrink-0" aria-hidden="true" />
@@ -496,13 +488,7 @@ export default function Settings() {
                                 />
 
                                 {recoveryError && (
-                                    <div
-                                        role="alert"
-                                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                    >
-                                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                        <span>{recoveryError}</span>
-                                    </div>
+                                    <ErrorAlert>{recoveryError}</ErrorAlert>
                                 )}
 
                                 <div className="flex gap-2">
@@ -598,15 +584,7 @@ export default function Settings() {
                                     value={disableTotpPassword}
                                     onChange={(e) => setDisableTotpPassword(e.target.value)}
                                 />
-                                {disableTotpError && (
-                                    <div
-                                        role="alert"
-                                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                    >
-                                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                        <span>{disableTotpError}</span>
-                                    </div>
-                                )}
+                                {disableTotpError && <ErrorAlert>{disableTotpError}</ErrorAlert>}
                                 <div className="flex gap-2">
                                     <Button type="submit" variant="danger" size="sm" loading={disableTotpSubmitting}>
                                         {disableTotpSubmitting ? 'Disabling…' : 'Disable 2FA'}
@@ -665,15 +643,7 @@ export default function Settings() {
                                             value={forgetDevicesPassword}
                                             onChange={(e) => setForgetDevicesPassword(e.target.value)}
                                         />
-                                        {forgetDevicesError && (
-                                            <div
-                                                role="alert"
-                                                className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                            >
-                                                <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                                <span>{forgetDevicesError}</span>
-                                            </div>
-                                        )}
+                                        {forgetDevicesError && <ErrorAlert>{forgetDevicesError}</ErrorAlert>}
                                         <div className="flex gap-2">
                                             <Button type="submit" size="sm" loading={forgetDevicesSubmitting}>
                                                 {forgetDevicesSubmitting ? 'Signing out…' : 'Sign out remembered devices'}
@@ -714,15 +684,7 @@ export default function Settings() {
                     </Link>
                     .
                 </p>
-                {exportError && (
-                    <div
-                        role="alert"
-                        className="mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                    >
-                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                        <span>{exportError}</span>
-                    </div>
-                )}
+                {exportError && <ErrorAlert className="mt-3">{exportError}</ErrorAlert>}
                 <Button
                     type="button"
                     variant="secondary"
@@ -786,15 +748,7 @@ export default function Settings() {
                             <span>Your vault entries, recovery key wrap, and 2FA setup are all permanently deleted.</span>
                         </div>
 
-                        {deleteError && (
-                            <div
-                                role="alert"
-                                className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                            >
-                                <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                <span>{deleteError}</span>
-                            </div>
-                        )}
+                        {deleteError && <ErrorAlert>{deleteError}</ErrorAlert>}
 
                         <div className="flex gap-2">
                             <Button

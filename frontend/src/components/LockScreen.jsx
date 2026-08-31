@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, KeyRound, Lock } from 'lucide-react';
+import { KeyRound, Lock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useVaultLock } from '../context/VaultLockContext.jsx';
 import Button from './ui/Button.jsx';
+import ErrorAlert from './ui/ErrorAlert.jsx';
 import Input from './ui/Input.jsx';
 import Panel from './ui/Panel.jsx';
 
@@ -78,15 +79,7 @@ export default function LockScreen() {
                             onChange={(e) => setPassword(e.target.value)}
                         />
 
-                        {error && (
-                            <div
-                                role="alert"
-                                className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                            >
-                                <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                <span>{error}</span>
-                            </div>
-                        )}
+                        {error && <ErrorAlert>{error}</ErrorAlert>}
 
                         <Button type="submit" variant="primary" className="w-full" loading={submitting}>
                             {submitting ? PHASE_LABEL[phase] : 'Unlock'}

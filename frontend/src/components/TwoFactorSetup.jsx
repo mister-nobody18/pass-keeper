@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { AlertCircle, KeyRound, ShieldCheck } from 'lucide-react';
+import { KeyRound, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client.js';
 import Panel from './ui/Panel.jsx';
 import Input from './ui/Input.jsx';
 import Button from './ui/Button.jsx';
+import ErrorAlert from './ui/ErrorAlert.jsx';
 
 /**
  * Settings-driven 2FA enrollment: fetch a fresh secret, render it as a
@@ -86,15 +87,7 @@ export default function TwoFactorSetup({ onCancel, onEnabled }) {
 
             {loading && <p className="text-sm text-ink-tertiary">Generating your secret…</p>}
 
-            {loadError && (
-                <div
-                    role="alert"
-                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                >
-                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                    <span>{loadError}</span>
-                </div>
-            )}
+            {loadError && <ErrorAlert>{loadError}</ErrorAlert>}
 
             {!loading && !loadError && (
                 <>
@@ -124,15 +117,7 @@ export default function TwoFactorSetup({ onCancel, onEnabled }) {
                             onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                         />
 
-                        {error && (
-                            <div
-                                role="alert"
-                                className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                            >
-                                <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                <span>{error}</span>
-                            </div>
-                        )}
+                        {error && <ErrorAlert>{error}</ErrorAlert>}
 
                         <div className="flex gap-2">
                             <Button type="submit" size="sm" loading={submitting} disabled={code.length !== 6}>

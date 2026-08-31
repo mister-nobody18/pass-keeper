@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { AlertCircle, Eye, EyeOff, Loader2, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2, Trash2 } from 'lucide-react';
 import Modal from './ui/Modal.jsx';
 import Input from './ui/Input.jsx';
 import Textarea from './ui/Textarea.jsx';
 import Button from './ui/Button.jsx';
+import ErrorAlert from './ui/ErrorAlert.jsx';
 import PasswordStrengthMeter from './ui/PasswordStrengthMeter.jsx';
 import AgeBadge from './ui/AgeBadge.jsx';
 import { useHoldReveal } from '../hooks/useHoldReveal.js';
@@ -166,15 +167,7 @@ export default function EntryModal({ entry, onClose, onSave, onDelete }) {
                     </div>
                 )}
 
-                {error && (
-                    <div
-                        role="alert"
-                        className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                    >
-                        <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                        <span>{error}</span>
-                    </div>
-                )}
+                {error && <ErrorAlert>{error}</ErrorAlert>}
             </form>
         </Modal>
     );

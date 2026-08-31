@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, Mail, MailCheck, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Mail, MailCheck } from 'lucide-react';
 import { api } from '../api/client.js';
+import AuthPageHeader from '../components/ui/AuthPageHeader.jsx';
 import Button from '../components/ui/Button.jsx';
+import ErrorAlert from '../components/ui/ErrorAlert.jsx';
 import Input from '../components/ui/Input.jsx';
 import Panel from '../components/ui/Panel.jsx';
 
@@ -32,19 +34,12 @@ export default function ForgotPassword() {
     return (
         <div className="flex min-h-screen items-center justify-center p-4">
             <div className="w-full max-w-sm">
-                <div className="mb-8 flex flex-col items-center text-center">
-                    <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                        <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                    </div>
-                    <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">
-                        Pass Keeper
-                    </p>
-                    <h1 className="text-xl font-semibold text-ink-primary">Reset your password</h1>
+                <AuthPageHeader title="Reset your password">
                     <p className="mt-1.5 text-sm text-ink-secondary">
                         We'll email you a link to continue. Your vault data is only recoverable if you saved a
                         recovery key.
                     </p>
-                </div>
+                </AuthPageHeader>
 
                 <Panel padding="lg">
                     {sent ? (
@@ -73,15 +68,7 @@ export default function ForgotPassword() {
                                 onChange={(e) => setEmail(e.target.value)}
                             />
 
-                            {error && (
-                                <div
-                                    role="alert"
-                                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                >
-                                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                    <span>{error}</span>
-                                </div>
-                            )}
+                            {error && <ErrorAlert>{error}</ErrorAlert>}
 
                             <Button type="submit" variant="primary" className="w-full" loading={submitting}>
                                 Send reset link

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { AlertCircle, Eye, EyeOff, KeyRound, Lock, Mail, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Lock, Mail } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
+import AuthPageHeader from '../components/ui/AuthPageHeader.jsx';
 import Button from '../components/ui/Button.jsx';
+import ErrorAlert from '../components/ui/ErrorAlert.jsx';
 import Input from '../components/ui/Input.jsx';
 import PasswordStrengthMeter from '../components/ui/PasswordStrengthMeter.jsx';
 import RecoveryKeyDisplay from '../components/RecoveryKeyDisplay.jsx';
@@ -137,18 +139,11 @@ export default function Auth() {
         return (
             <div className="flex min-h-screen items-center justify-center p-4">
                 <div className="w-full max-w-sm">
-                    <div className="mb-8 flex flex-col items-center text-center">
-                        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                            <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                        </div>
-                        <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">
-                            Pass Keeper
-                        </p>
-                        <h1 className="text-xl font-semibold text-ink-primary">Two-factor authentication</h1>
+                    <AuthPageHeader title="Two-factor authentication">
                         <p className="mt-1.5 text-sm text-ink-secondary">
                             Enter the 6-digit code from your authenticator app.
                         </p>
-                    </div>
+                    </AuthPageHeader>
 
                     <div className="rounded-2xl border border-line bg-surface-raised p-6 shadow-overlay sm:p-10">
                         <form onSubmit={handleTwoFactorSubmit} className="space-y-5" noValidate>
@@ -178,15 +173,7 @@ export default function Auth() {
                                 <span>Remember this device for 30 days</span>
                             </label>
 
-                            {twoFactorError && (
-                                <div
-                                    role="alert"
-                                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                >
-                                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                    <span>{twoFactorError}</span>
-                                </div>
-                            )}
+                            {twoFactorError && <ErrorAlert>{twoFactorError}</ErrorAlert>}
 
                             <Button
                                 type="submit"
@@ -221,15 +208,7 @@ export default function Auth() {
         return (
             <div className="flex min-h-screen items-center justify-center p-4">
                 <div className="w-full max-w-sm">
-                    <div className="mb-8 flex flex-col items-center text-center">
-                        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                            <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                        </div>
-                        <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">
-                            Pass Keeper
-                        </p>
-                        <h1 className="text-xl font-semibold text-ink-primary">Account created</h1>
-                    </div>
+                    <AuthPageHeader title="Account created" />
                     <RecoveryKeyDisplay
                         recoveryKey={recoveryKey}
                         onContinue={() => {
@@ -250,11 +229,23 @@ export default function Auth() {
     return (
         <div className="flex min-h-screen items-center justify-center p-4">
             <div className="w-full max-w-sm md:max-w-3xl">
-                <div className="mb-8 flex flex-col items-center text-center">
-                    <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                        <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                    </div>
-                    <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">Pass Keeper</p>
+                <AuthPageHeader />
+
+                <div className="mb-8 rounded-2xl border border-line bg-surface-raised p-6 text-center shadow-overlay sm:p-8">
+                    <h2 className="text-sm font-semibold text-ink-primary">About this project</h2>
+                    <p className="mt-2 text-sm text-ink-secondary">
+                        Pass Keeper — a self-hosted, zero-knowledge password manager. Your master password never
+                        reaches this server; everything is encrypted and decrypted in your browser. Built on plain
+                        PHP + MySQL, audited end-to-end.
+                    </p>
+                    <a
+                        href="https://github.com/mister-nobody18/pass-keeper"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-block rounded text-sm text-accent transition-colors duration-fast hover:text-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    >
+                        View source &amp; full security writeup on GitHub →
+                    </a>
                 </div>
 
                 <div className="relative grid overflow-hidden rounded-2xl border border-line bg-surface-raised shadow-overlay md:min-h-[560px] md:grid-cols-2">
@@ -328,15 +319,7 @@ export default function Auth() {
                                 />
                             </div>
 
-                            {loginError && (
-                                <div
-                                    role="alert"
-                                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                >
-                                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                    <span>{loginError}</span>
-                                </div>
-                            )}
+                            {loginError && <ErrorAlert>{loginError}</ErrorAlert>}
 
                             <Button type="submit" variant="primary" className="w-full" loading={loginSubmitting}>
                                 {loginSubmitting ? LOGIN_PHASE_LABEL[loginPhase] : 'Sign in'}
@@ -422,15 +405,7 @@ export default function Auth() {
                                 error={signupConfirm && signupConfirm !== signupPassword ? "Passwords don't match." : undefined}
                             />
 
-                            {signupError && (
-                                <div
-                                    role="alert"
-                                    className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger"
-                                >
-                                    <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                    <span>{signupError}</span>
-                                </div>
-                            )}
+                            {signupError && <ErrorAlert>{signupError}</ErrorAlert>}
 
                             <Button type="submit" variant="primary" className="w-full" loading={signupSubmitting}>
                                 {signupSubmitting ? SIGNUP_PHASE_LABEL[signupPhase] : 'Create account'}

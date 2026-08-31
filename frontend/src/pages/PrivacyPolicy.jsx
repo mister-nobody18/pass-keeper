@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
-import { ArrowLeft, ShieldCheck } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
+import AuthPageHeader from '../components/ui/AuthPageHeader.jsx';
 import Panel from '../components/ui/Panel.jsx';
 
 const LAST_UPDATED = '13 August 2026';
@@ -10,14 +11,9 @@ export default function PrivacyPolicy() {
 
     return (
         <div className="mx-auto max-w-2xl p-4 py-10 sm:p-6 sm:py-14">
-            <div className="mb-8 flex flex-col items-center text-center">
-                <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-accent/30 bg-accent/10">
-                    <ShieldCheck className="h-5 w-5 text-accent" aria-hidden="true" />
-                </div>
-                <p className="mb-1 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-tertiary">Pass Keeper</p>
-                <h1 className="text-xl font-semibold text-ink-primary">Privacy Policy</h1>
+            <AuthPageHeader title="Privacy Policy">
                 <p className="mt-1.5 text-sm text-ink-tertiary">Last updated {LAST_UPDATED}</p>
-            </div>
+            </AuthPageHeader>
 
             <Panel padding="lg" className="space-y-6 text-sm leading-relaxed text-ink-secondary">
                 <div className="rounded-md border border-line bg-surface px-4 py-3 text-xs text-ink-tertiary">
