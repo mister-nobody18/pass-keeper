@@ -251,7 +251,7 @@ export default function Auth() {
                 <div className="relative grid overflow-hidden rounded-2xl border border-line bg-surface-raised shadow-overlay md:min-h-[560px] md:grid-cols-2">
                     {/* Login panel - always the left grid slot on desktop */}
                     <div
-                        inert={mode !== 'login' ? '' : undefined}
+                        inert={mode !== 'login'}
                         className={cn(
                             'flex-col justify-center p-6 sm:p-10 md:flex',
                             mode === 'login' ? 'flex' : 'hidden',
@@ -345,7 +345,7 @@ export default function Auth() {
 
                     {/* Signup panel - always the right grid slot on desktop */}
                     <div
-                        inert={mode !== 'signup' ? '' : undefined}
+                        inert={mode !== 'signup'}
                         className={cn(
                             'flex-col justify-center p-6 sm:p-10 md:col-start-2 md:flex',
                             mode === 'signup' ? 'flex' : 'hidden',

@@ -1,6 +1,38 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme inline {
+    --color-surface: rgb(var(--app-color-surface));
+    --color-surface-raised: rgb(var(--app-color-surface-raised));
+    --color-surface-overlay: rgb(var(--app-color-surface-overlay));
+    --color-surface-border: rgb(var(--app-color-border));
+    --color-line: rgb(var(--app-color-border));
+    --color-line-strong: rgb(var(--app-color-border-strong));
+    --color-ink-primary: rgb(var(--app-color-text-primary));
+    --color-ink-secondary: rgb(var(--app-color-text-secondary));
+    --color-ink-tertiary: rgb(var(--app-color-text-tertiary));
+    --color-accent: rgb(var(--app-color-accent));
+    --color-accent-hover: rgb(var(--app-color-accent-hover));
+    --color-accent-on: rgb(var(--app-color-on-accent));
+    --color-danger: rgb(var(--app-color-danger));
+    --color-warning: rgb(var(--app-color-warning));
+    --color-success: rgb(var(--app-color-success));
+
+    --font-sans: var(--app-font-sans);
+    --font-mono: var(--app-font-mono);
+    --radius-sm: var(--app-radius-sm);
+    --radius-md: var(--app-radius-md);
+    --radius-lg: var(--app-radius-lg);
+    --shadow-panel: 0 1px 0 0 rgb(255 255 255 / 0.03) inset, 0 12px 32px -12px rgb(0 0 0 / 0.55);
+    --shadow-overlay: 0 24px 64px -16px rgb(0 0 0 / 0.7);
+}
+
+@utility duration-fast {
+    transition-duration: var(--app-transition-fast);
+}
+
+@utility duration-base {
+    transition-duration: var(--app-transition-base);
+}
 
 @font-face {
     font-family: 'JetBrains Mono';
@@ -26,25 +58,25 @@
 
 /*
  * Design tokens — the single place to retheme the app.
- * Colours are "R G B" triplets (not hex) so Tailwind's `/opacity` modifiers work
- * (see the `withOpacity` helper in tailwind.config.js).
+ * Colours are "R G B" triplets (not hex); the @theme aliases above keep
+ * Tailwind's `/opacity` modifiers working while preserving these CSS tokens.
  */
 :root {
     color-scheme: dark;
 
     /* Surfaces: near-black base, each step slightly lifted */
-    --color-surface: 16 18 24; /* page background, recessed fields */
-    --color-surface-raised: 23 26 33; /* cards / panels */
-    --color-surface-overlay: 29 33 42; /* modals, popovers */
+    --app-color-surface: 16 18 24; /* page background, recessed fields */
+    --app-color-surface-raised: 23 26 33; /* cards / panels */
+    --app-color-surface-overlay: 29 33 42; /* modals, popovers */
 
     /* Borders */
-    --color-border: 38 43 53;
-    --color-border-strong: 58 65 83;
+    --app-color-border: 38 43 53;
+    --app-color-border-strong: 58 65 83;
 
     /* Text */
-    --color-text-primary: 231 233 238;
-    --color-text-secondary: 154 163 178;
-    --color-text-tertiary: 131 139 160;
+    --app-color-text-primary: 231 233 238;
+    --app-color-text-secondary: 154 163 178;
+    --app-color-text-tertiary: 131 139 160;
 
     /* Accent — the one interactive/focus colour, used sparingly.
        Mirrors the purple/fuchsia palette introduced on the Auth screen
@@ -53,27 +85,27 @@
        verified: accent vs surface 7.08:1, vs surface-raised 6.59:1,
        on-accent text on the accent fill 7.17:1 - all comfortably above
        WCAG AA's 4.5:1 (text) / 3:1 (UI component) minimums. */
-    --color-accent: 192 132 252; /* purple-400 */
-    --color-accent-hover: 216 180 254; /* purple-300 */
-    --color-on-accent: 24 10 36; /* near-black, purple-tinted; text/icon colour on top of an accent-filled surface */
+    --app-color-accent: 192 132 252; /* purple-400 */
+    --app-color-accent-hover: 216 180 254; /* purple-300 */
+    --app-color-on-accent: 24 10 36; /* near-black, purple-tinted; text/icon colour on top of an accent-filled surface */
 
     /* Status colours — always paired with an icon + text label, never colour alone */
-    --color-danger: 248 113 113;
-    --color-warning: 251 191 36;
-    --color-success: 74 222 128;
+    --app-color-danger: 248 113 113;
+    --app-color-warning: 251 191 36;
+    --app-color-success: 74 222 128;
 
     /* Typography */
-    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --app-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;
+    --app-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
     /* Radii */
-    --radius-sm: 6px;
-    --radius-md: 10px;
-    --radius-lg: 16px;
+    --app-radius-sm: 6px;
+    --app-radius-md: 10px;
+    --app-radius-lg: 16px;
 
     /* Transitions */
-    --transition-fast: 120ms;
-    --transition-base: 200ms;
+    --app-transition-fast: 120ms;
+    --app-transition-base: 200ms;
 }
 
 html {

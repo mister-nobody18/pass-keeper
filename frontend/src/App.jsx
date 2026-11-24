@@ -16,7 +16,7 @@ function LockGate({ children }) {
         <>
             {/* `inert` keeps the vault unreachable by keyboard/assistive tech while locked,
                 not just visually obscured. */}
-            <div inert={locked ? '' : undefined}>{children}</div>
+            <div inert={locked}>{children}</div>
             {locked && <LockScreen />}
         </>
     );

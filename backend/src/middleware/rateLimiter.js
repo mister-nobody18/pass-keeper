@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 export const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -24,7 +24,7 @@ export const settingsPasswordLimiter = rateLimit({
     limit: 5,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => `${req.sessionId || 'anon'}:${req.ip}`,
+    keyGenerator: (req) => `${req.sessionId || 'anon'}:${ipKeyGenerator(req.ip)}`,
     message: { error: 'Too many password change attempts. Please try again in 15 minutes.' },
 });
 

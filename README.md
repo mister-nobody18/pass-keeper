@@ -242,8 +242,9 @@ what's collected, retained, and why.
   (Secure cookies, the auth hash's protection in transit) depend on TLS
   actually being enforced, which `backend-php/public_html/.htaccess`
   redirects to.
-- A modern browser with WebCrypto, WebAssembly, and Web Worker support (any
-  browser from the last several years).
+- A modern browser with WebCrypto, WebAssembly, and Web Worker support.
+  The frontend bundle uses Tailwind CSS v4 and requires Safari 16.4+, Chrome
+  111+, or Firefox 128+ for its CSS features.
 - No Node, Redis, cron, or shell access required to *run* it. A build step
   (Node + `vite build`) is required to *produce* the frontend bundle before
   upload — that happens on a developer machine or in CI, never on the host.
